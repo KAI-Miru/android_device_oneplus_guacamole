@@ -1,0 +1,292 @@
+name: Guacamole H.40 adapter compile/link gate
+
+on:
+  push:
+    branches:
+      - codex/guacamole-twrp12-latest
+    paths:
+      - ".github/workflows/guacamole-h40-adapter-compile.yml"
+      - "ci/twrp-oplus-h40-decrypt.patch"
+      - "ci/verify-h40-adapter-elf.sh"
+      - "BoardConfig.mk"
+      - "device.mk"
+      - "twrp_guacamole.mk"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: guacamole-h40-adapter-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compile-link-gate:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 240
+
+    env:
+      MANIFEST_URL: https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git
+      MANIFEST_BRANCH: twrp-12.1
+      DEVICE_PATH: device/oneplus/guacamole
+      COMMON_PATH: device/oneplus/sm8150-common
+      ONEPLUS_COMMON_PATH: device/oneplus/common
+      KERNEL_PATH: kernel/oneplus/sm8150
+      RECOVERY_REVISION: 5c3d206a5eeb3d446bcda8248a405a4b278bab5c
+      ADAPTER_PATCH_REL: ci/twrp-oplus-h40-decrypt.patch
+      ADAPTER_PATCH_SHA256: 0f0059c8b8415075ef5e96755160e8f8d03a5f66958a403de4fccc86fb04736d
+      BUILD_TARGET: recovery
+      RECOVERY_BINARY_REL: out/target/product/guacamole/recovery/root/system/bin/recovery
+      BUILD_JOBS: "4"
+      LC_ALL: C
+      TZ: UTC
+
+    steps:
+      - name: Free runner disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: false
+
+      - name: Install build and ELF inspection prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            bc binutils bison build-essential ccache curl flex g++-multilib \
+            gcc-multilib git git-lfs gnupg gperf imagemagick \
+            lib32ncurses5-dev lib32readline-dev lib32z1-dev libelf-dev \
+            liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev \
+            libxml2 libxml2-utils lzop pngcrush python3 rsync schedtool \
+            squashfs-tools xsltproc zip zlib1g-dev
+          mkdir -p "$HOME/bin"
+          curl --fail --location --retry 3 \
+            https://storage.googleapis.com/git-repo-downloads/repo \
+            --output "$HOME/bin/repo"
+          chmod 0755 "$HOME/bin/repo"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+          git config --global user.name "TWRP CI"
+          git config --global user.email "twrp-ci@users.noreply.github.com"
+          df -h
+
+      - name: Initialize TWRP 12.1 with pinned recovery
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/twrp"
+          cd "$RUNNER_TEMP/twrp"
+          "$HOME/bin/repo" init --depth=1 \
+            --manifest-url "$MANIFEST_URL" \
+            --manifest-branch "$MANIFEST_BRANCH"
+
+          mkdir -p .repo/local_manifests
+          cat > .repo/local_manifests/oneplus.xml <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <manifest>
+            <extend-project name="android_bootable_recovery"
+                            path="bootable/recovery"
+                            revision="$RECOVERY_REVISION" />
+            <project path="$DEVICE_PATH"
+                     name="${GITHUB_REPOSITORY}"
+                     remote="github"
+                     revision="${GITHUB_SHA}"
+                     clone-depth="1" />
+            <project path="$COMMON_PATH"
+                     name="TeamWin/android_device_oneplus_sm8150-common"
+                     remote="github"
+                     revision="android-12.1"
+                     clone-depth="1" />
+            <project path="$ONEPLUS_COMMON_PATH"
+                     name="LineageOS/android_device_oneplus_common"
+                     remote="github"
+                     revision="lineage-18.1"
+                     clone-depth="1" />
+            <project path="$KERNEL_PATH"
+                     name="nebrassy/android_kernel_oneplus_sm8150"
+                     remote="github"
+                     revision="android-12.1"
+                     clone-depth="1" />
+          </manifest>
+          EOF
+
+          "$HOME/bin/repo" sync --force-sync --no-clone-bundle --no-tags \
+            --optimized-fetch --prune --fail-fast -j"$BUILD_JOBS"
+
+      - name: Apply reviewed adapter and CI-only build flag
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/twrp"
+          "$HOME/bin/repo" manifest -r -o "$GITHUB_WORKSPACE/twrp-snapshot.xml"
+
+          recovery_actual="$(git -C bootable/recovery rev-parse HEAD)"
+          if [[ "$recovery_actual" != "$RECOVERY_REVISION" ]]; then
+            echo "Expected recovery $RECOVERY_REVISION, got $recovery_actual" >&2
+            exit 1
+          fi
+
+          patch_file="$PWD/$DEVICE_PATH/$ADAPTER_PATCH_REL"
+          test -f "$patch_file"
+          printf '%s  %s\n' "$ADAPTER_PATCH_SHA256" "$patch_file" \
+            | sha256sum --check -
+
+          git -C "$DEVICE_PATH" ls-files \
+            | awk -F/ '{print $NF}' \
+            | LC_ALL=C sort -u \
+            > "$RUNNER_TEMP/guacamole-tracked-basenames.txt"
+          : > "$GITHUB_WORKSPACE/h40-proprietary-blob-scan.txt"
+          for blob in \
+            libdecrypt_recovery.so \
+            libcryptfs_hw.so \
+            libfscrypt.so \
+            vendor.oplus.hardware.cryptoeng@1.0.so \
+            vendor.qti.hardware.cryptfshw@1.0.so
+          do
+            if grep -Fqx -- "$blob" \
+              "$RUNNER_TEMP/guacamole-tracked-basenames.txt"
+            then
+              echo "H.40 proprietary blob is tracked by the device tree: $blob" >&2
+              exit 1
+            fi
+            printf 'absent\t%s\n' "$blob" \
+              >> "$GITHUB_WORKSPACE/h40-proprietary-blob-scan.txt"
+          done
+
+          git -C bootable/recovery apply --check --index \
+            --whitespace=error-all "$patch_file"
+          git -C bootable/recovery apply --index \
+            --whitespace=error-all "$patch_file"
+          git -C bootable/recovery diff --cached --check
+
+          printf '%s\n' \
+            Android.mk \
+            oplus_h40_decrypt.cpp \
+            oplus_h40_decrypt.hpp \
+            partitionmanager.cpp \
+            | LC_ALL=C sort \
+            > "$GITHUB_WORKSPACE/recovery-patch-paths.expected.txt"
+          git -C bootable/recovery diff --cached --name-only \
+            | LC_ALL=C sort \
+            > "$GITHUB_WORKSPACE/recovery-patch-paths.actual.txt"
+          diff -u \
+            "$GITHUB_WORKSPACE/recovery-patch-paths.expected.txt" \
+            "$GITHUB_WORKSPACE/recovery-patch-paths.actual.txt" \
+            | tee "$GITHUB_WORKSPACE/recovery-patch-paths.diff"
+
+          {
+            echo "base_commit=$recovery_actual"
+            echo "patched_tree=$(git -C bootable/recovery write-tree)"
+            echo "patch_sha256=$(sha256sum "$patch_file" | awk '{print $1}')"
+            echo
+            git -C bootable/recovery diff --cached --stat
+            echo
+            git -C bootable/recovery status --short
+          } | tee "$GITHUB_WORKSPACE/recovery-patch-report.txt"
+
+          if grep -Eq '^[[:space:]]*TW_INCLUDE_OPLUS_H40_DECRYPT[[:space:]]*:=' \
+            "$DEVICE_PATH/BoardConfig.mk"
+          then
+            echo "Adapter flag is already committed to BoardConfig.mk; keep the gate CI-only" >&2
+            exit 1
+          fi
+          printf '\n# CI-only: compile/link the reviewed H.40 dlopen adapter.\n' \
+            >> "$DEVICE_PATH/BoardConfig.mk"
+          printf 'TW_INCLUDE_OPLUS_H40_DECRYPT := true\n' \
+            >> "$DEVICE_PATH/BoardConfig.mk"
+          git -C "$DEVICE_PATH" diff -- BoardConfig.mk \
+            > "$GITHUB_WORKSPACE/device-ci-overlay.patch"
+
+          {
+            echo "workflow_repository=${GITHUB_REPOSITORY}"
+            echo "workflow_revision=${GITHUB_SHA}"
+            echo "manifest=$(git -C .repo/manifests rev-parse HEAD)"
+            echo "recovery_base=$recovery_actual"
+            echo "recovery_patched_tree=$(git -C bootable/recovery write-tree)"
+            echo "adapter_patch_sha256=$(sha256sum "$patch_file" | awk '{print $1}')"
+            echo "device=$(git -C "$DEVICE_PATH" rev-parse HEAD)"
+            echo "sm8150_common=$(git -C "$COMMON_PATH" rev-parse HEAD)"
+            echo "oneplus_common=$(git -C "$ONEPLUS_COMMON_PATH" rev-parse HEAD)"
+            echo "kernel_source=$(git -C "$KERNEL_PATH" rev-parse HEAD)"
+            echo "build_target=$BUILD_TARGET"
+            echo "kernel_build_target_requested=false"
+            echo "boot_or_ramdisk_target_requested=false"
+            echo "expected_recovery_binary=$RECOVERY_BINARY_REL"
+          } | tee "$GITHUB_WORKSPACE/build-provenance.txt"
+
+      - name: Configure guacamole adapter gate
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/twrp"
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export BUILD_USERNAME=KAI-Miru
+          export BUILD_HOSTNAME=github-actions
+          source build/envsetup.sh
+          lunch twrp_guacamole-eng
+
+          adapter_flag="$(get_build_var TW_INCLUDE_OPLUS_H40_DECRYPT)"
+          if [[ "$adapter_flag" != "true" ]]; then
+            echo "TW_INCLUDE_OPLUS_H40_DECRYPT resolved to '$adapter_flag'" >&2
+            exit 1
+          fi
+
+          {
+            echo "TARGET_PRODUCT=$(get_build_var TARGET_PRODUCT)"
+            echo "TARGET_DEVICE=$(get_build_var TARGET_DEVICE)"
+            echo "TARGET_ARCH=$(get_build_var TARGET_ARCH)"
+            echo "PLATFORM_VERSION=$(get_build_var PLATFORM_VERSION)"
+            echo "TW_INCLUDE_CRYPTO=$(get_build_var TW_INCLUDE_CRYPTO)"
+            echo "TW_INCLUDE_FBE_METADATA_DECRYPT=$(get_build_var TW_INCLUDE_FBE_METADATA_DECRYPT)"
+            echo "TW_INCLUDE_OPLUS_H40_DECRYPT=$adapter_flag"
+            echo "BUILD_TARGET=$BUILD_TARGET"
+          } | tee "$GITHUB_WORKSPACE/build-configuration.txt"
+
+      - name: Compile and link recovery executable only
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cd "$RUNNER_TEMP/twrp"
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export BUILD_USERNAME=KAI-Miru
+          export BUILD_HOSTNAME=github-actions
+          source build/envsetup.sh
+          lunch twrp_guacamole-eng
+          mka "$BUILD_TARGET" -j"$BUILD_JOBS" 2>&1 \
+            | tee "$GITHUB_WORKSPACE/build.log"
+
+      - name: Verify adapter strings and dynamic linkage
+        if: steps.build.outcome == 'success'
+        run: |
+          set -euo pipefail
+          binary="$RUNNER_TEMP/twrp/$RECOVERY_BINARY_REL"
+          bash "$RUNNER_TEMP/twrp/$DEVICE_PATH/ci/verify-h40-adapter-elf.sh" \
+            "$binary" "$GITHUB_WORKSPACE"
+
+      - name: Upload provenance and diagnostics only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: guacamole-h40-adapter-compile-diagnostics
+          path: |
+            twrp-snapshot.xml
+            build-provenance.txt
+            build-configuration.txt
+            recovery-patch-report.txt
+            recovery-patch-paths.expected.txt
+            recovery-patch-paths.actual.txt
+            recovery-patch-paths.diff
+            device-ci-overlay.patch
+            h40-proprietary-blob-scan.txt
+            build.log
+            recovery-elf-header.txt
+            recovery-dynamic-section.txt
+            recovery-dt-needed.txt
+            recovery-adapter-strings.txt
+            recovery-elf.sha256
+            recovery-elf-metadata.txt
+            adapter-verification.txt
+          if-no-files-found: warn
+          retention-days: 14

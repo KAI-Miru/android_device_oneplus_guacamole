@@ -1,0 +1,319 @@
+diff --git a/Android.mk b/Android.mk
+index 383adca..db2f73f 100644
+--- a/Android.mk
++++ b/Android.mk
+@@ -334,6 +334,11 @@ endif
+ ifeq ($(TW_INCLUDE_CRYPTO), true)
+     LOCAL_CFLAGS += -DTW_INCLUDE_CRYPTO -DUSE_FSCRYPT -Wno-macro-redefined
+     LOCAL_SHARED_LIBRARIES += libgpt_twrp
++    ifeq ($(TW_INCLUDE_OPLUS_H40_DECRYPT),true)
++        LOCAL_SRC_FILES += oplus_h40_decrypt.cpp
++        LOCAL_CFLAGS += -DTW_INCLUDE_OPLUS_H40_DECRYPT
++        LOCAL_SHARED_LIBRARIES += libdl
++    endif
+     LOCAL_C_INCLUDES += external/boringssl/src/include bootable/recovery/crypto
+     TW_INCLUDE_CRYPTO_FBE := true
+     LOCAL_CFLAGS += -DTW_INCLUDE_FBE
+diff --git a/oplus_h40_decrypt.cpp b/oplus_h40_decrypt.cpp
+new file mode 100644
+index 0000000..6a80aba
+--- /dev/null
++++ b/oplus_h40_decrypt.cpp
+@@ -0,0 +1,158 @@
++#include "oplus_h40_decrypt.hpp"
++
++#include <dlfcn.h>
++
++#include <string>
++
++#include "twcommon.h"
++
++namespace twrp {
++namespace oplus_h40 {
++namespace {
++
++constexpr char kLibrary[] = "libdecrypt_recovery.so";
++constexpr char kVerifySymbol[] =
++        "_Z21OplusCredentialVerifyNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEEi";
++constexpr char kSetupDeCeSymbol[] = "_Z11setup_de_cei";
++constexpr char kGetPasswordTypeSymbol[] = "_Z17get_password_typei";
++constexpr char kInitUser0CeSymbol[] = "_Z21fscrypt_init_user0_cev";
++constexpr char kMountMetadataSymbol[] =
++        "_Z32fscrypt_mount_metadata_encryptedRKNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEE";
++
++using VerifyFn = int (*)(std::string, int);
++using SetupDeCeFn = bool (*)(int);
++using GetPasswordTypeFn = int (*)(int);
++using InitUser0CeFn = bool (*)();
++using MountMetadataFn = bool (*)(const std::string&);
++
++struct Api {
++    void* handle = nullptr;
++    VerifyFn verify = nullptr;
++    SetupDeCeFn setup_de_ce = nullptr;
++    GetPasswordTypeFn get_password_type = nullptr;
++    InitUser0CeFn init_user0_ce = nullptr;
++    MountMetadataFn mount_metadata = nullptr;
++};
++
++struct RuntimeState {
++    bool setup_invoked = false;
++    bool user0_ce_ready = false;
++};
++
++template <typename T>
++T FindSymbol(void* handle, const char* name) {
++    dlerror();
++    void* symbol = dlsym(handle, name);
++    const char* error = dlerror();
++    if (error != nullptr) {
++        LOGERR("Oplus H.40 decrypt: missing symbol %s: %s\n", name, error);
++        return nullptr;
++    }
++    return reinterpret_cast<T>(symbol);
++}
++
++const Api& GetApi() {
++    static const Api api = [] {
++        Api loaded;
++        loaded.handle = dlopen(kLibrary, RTLD_NOW | RTLD_LOCAL);
++        if (loaded.handle == nullptr) {
++            LOGINFO("Oplus H.40 decrypt unavailable: %s\n", dlerror());
++            return loaded;
++        }
++        loaded.verify = FindSymbol<VerifyFn>(loaded.handle, kVerifySymbol);
++        loaded.setup_de_ce = FindSymbol<SetupDeCeFn>(loaded.handle, kSetupDeCeSymbol);
++        loaded.get_password_type =
++                FindSymbol<GetPasswordTypeFn>(loaded.handle, kGetPasswordTypeSymbol);
++        loaded.init_user0_ce = FindSymbol<InitUser0CeFn>(loaded.handle, kInitUser0CeSymbol);
++        loaded.mount_metadata = FindSymbol<MountMetadataFn>(loaded.handle, kMountMetadataSymbol);
++        if (loaded.verify == nullptr || loaded.setup_de_ce == nullptr ||
++            loaded.get_password_type == nullptr || loaded.init_user0_ce == nullptr ||
++            loaded.mount_metadata == nullptr) {
++            dlclose(loaded.handle);
++            loaded = {};
++            return loaded;
++        }
++        LOGINFO("Oplus H.40 decrypt ABI loaded\n");
++        return loaded;
++    }();
++    return api;
++}
++
++RuntimeState& GetRuntimeState() {
++    static RuntimeState state;
++    return state;
++}
++
++void EnsureDeSetup(const Api& api) {
++    RuntimeState& state = GetRuntimeState();
++    if (state.setup_invoked) return;
++
++    // Stock H.40 invokes setup_de_ce immediately after metadata mapping. Its
++    // implementation returns true at its common exit even after some internal
++    // failures, so the return is diagnostic only. TWRP's normal Decrypt_FBE_DE
++    // pass remains responsible for validating DE and populating its user map.
++    state.setup_invoked = true;
++    LOGINFO("Oplus H.40 invoking setup_de_ce(0)\n");
++    const bool setup_result = api.setup_de_ce(0);
++    LOGINFO("Oplus H.40 setup_de_ce(0) returned %d (diagnostic only)\n", setup_result);
++
++    // setup_de_ce(0) uses -1 from the OEM password-type function as its
++    // no-credential signal and attempts user-0 CE in that case. Repeat the
++    // exported idempotent helper so a later TWRP "!" probe has a real boolean
++    // postcondition without making a gatekeeper request.
++    const int password_type = api.get_password_type(0);
++    LOGINFO("Oplus H.40 password type for user 0 returned %d\n", password_type);
++    if (password_type == -1) {
++        state.user0_ce_ready = api.init_user0_ce();
++        LOGINFO("Oplus H.40 no-credential CE postcondition returned %d\n",
++                state.user0_ce_ready);
++    }
++}
++
++}  // namespace
++
++Result MountMetadataAndPrepareDe(const std::string& mount_point) {
++    const Api& api = GetApi();
++    if (api.handle == nullptr) return Result::kUnavailable;
++    LOGINFO("Oplus H.40 invoking metadata mount for %s\n", mount_point.c_str());
++    const bool mounted = api.mount_metadata(mount_point);
++    LOGINFO("Oplus H.40 metadata mount for %s returned %d\n", mount_point.c_str(), mounted);
++    if (!mounted) return Result::kFailure;
++
++    EnsureDeSetup(api);
++    return Result::kSuccess;
++}
++
++Result DecryptUser(const std::string& password, int user_id) {
++    // The H.40 implementation always calls fscrypt_init_user0_ce(), even when
++    // its integer argument is nonzero. It is therefore valid only for user 0.
++    if (user_id != 0) return Result::kUnavailable;
++
++    const Api& api = GetApi();
++    if (api.handle == nullptr) return Result::kUnavailable;
++
++    // This is normally completed directly after OEM metadata mapping. Keep a
++    // late setup path for a build where generic metadata mounting was selected.
++    EnsureDeSetup(api);
++
++    if (password == "!") {
++        return GetRuntimeState().user0_ce_ready ? Result::kSuccess : Result::kUnavailable;
++    }
++
++    LOGINFO("Oplus H.40 invoking credential verify for user %d\n", user_id);
++    const int verify_result = api.verify(password, user_id);
++    LOGINFO("Oplus H.40 credential verify for user %d returned %d\n", user_id, verify_result);
++    if (verify_result != 0) return Result::kFailure;
++
++    // OplusCredentialVerify returns 0 after a successful gatekeeper response
++    // even if its internal fscrypt_init_user0_ce() call fails. Repeating the
++    // idempotent exported helper gives us the missing CE-key postcondition.
++    LOGINFO("Oplus H.40 invoking user 0 CE postcondition\n");
++    const bool ce_ready = api.init_user0_ce();
++    LOGINFO("Oplus H.40 user 0 CE postcondition returned %d\n", ce_ready);
++    GetRuntimeState().user0_ce_ready = ce_ready;
++    return ce_ready ? Result::kSuccess : Result::kFailure;
++}
++
++}  // namespace oplus_h40
++}  // namespace twrp
+diff --git a/oplus_h40_decrypt.hpp b/oplus_h40_decrypt.hpp
+new file mode 100644
+index 0000000..b4b8ad6
+--- /dev/null
++++ b/oplus_h40_decrypt.hpp
+@@ -0,0 +1,23 @@
++#pragma once
++
++#include <string>
++
++namespace twrp {
++namespace oplus_h40 {
++
++// Unavailable means that the H.40 blob or required ABI is absent, so the
++// normal TWRP implementation remains eligible as a fallback. Failure means
++// the proprietary implementation ran and rejected the request (or failed its
++// CE-key postcondition); callers must not retry the same credential through a
++// second gatekeeper implementation.
++enum class Result {
++    kUnavailable,
++    kFailure,
++    kSuccess,
++};
++
++Result MountMetadataAndPrepareDe(const std::string& mount_point);
++Result DecryptUser(const std::string& password, int user_id);
++
++}  // namespace oplus_h40
++}  // namespace twrp
+diff --git a/partitionmanager.cpp b/partitionmanager.cpp
+index 2766b4c..4a12bd2 100755
+--- a/partitionmanager.cpp
++++ b/partitionmanager.cpp
+@@ -106,6 +106,10 @@ extern "C" {
+ #endif
+ #endif
+ 
++#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
++#include "oplus_h40_decrypt.hpp"
++#endif
++
+ #ifdef AB_OTA_UPDATER
+ #include <android/hardware/boot/1.0/IBootControl.h>
+ using android::hardware::boot::V1_0::CommandResult;
+@@ -595,6 +599,20 @@ void TWPartitionManager::Decrypt_Data() {
+ #ifdef TW_INCLUDE_FBE_METADATA_DECRYPT
+ #ifdef USE_FSCRYPT
+-			if (android::vold::fscrypt_mount_metadata_encrypted(Decrypt_Data->Actual_Block_Device, Decrypt_Data->Mount_Point, false, false, Decrypt_Data->Current_File_System, TWFunc::Path_Exists(additional_fstab) ? additional_fstab : "")) {
++#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
++			bool metadata_mounted = false;
++			bool oplus_metadata_used = false;
++			const twrp::oplus_h40::Result oplus_metadata =
++				twrp::oplus_h40::MountMetadataAndPrepareDe(Decrypt_Data->Mount_Point);
++			if (oplus_metadata == twrp::oplus_h40::Result::kSuccess) {
++				metadata_mounted = true;
++				oplus_metadata_used = true;
++			} else if (oplus_metadata == twrp::oplus_h40::Result::kUnavailable) {
++				metadata_mounted = android::vold::fscrypt_mount_metadata_encrypted(Decrypt_Data->Actual_Block_Device, Decrypt_Data->Mount_Point, false, false, Decrypt_Data->Current_File_System, TWFunc::Path_Exists(additional_fstab) ? additional_fstab : "");
++			}
++			if (metadata_mounted) {
++#else
++			if (android::vold::fscrypt_mount_metadata_encrypted(Decrypt_Data->Actual_Block_Device, Decrypt_Data->Mount_Point, false, false, Decrypt_Data->Current_File_System, TWFunc::Path_Exists(additional_fstab) ? additional_fstab : "")) {
++#endif
+ 				std::string crypto_blkdev = android::base::GetProperty("ro.crypto.fs_crypto_blkdev", "error");
+ 				Decrypt_Data->Decrypted_Block_Device = crypto_blkdev;
+ 				LOGINFO("Successfully decrypted metadata encrypted data partition with new block device: '%s'\n", crypto_blkdev.c_str());
+@@ -605,8 +619,14 @@ void TWPartitionManager::Decrypt_Data() {
+ 				while (!Decrypt_Data->Mount(false) && --retry_count)
+ 					usleep(500);
+ 				if (Decrypt_Data->Mount(false)) {
+ 					if (!Decrypt_Data->Decrypt_FBE_DE()) {
+ 						LOGERR("Unable to decrypt FBE device\n");
++#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
++						if (oplus_metadata_used) {
++							LOGERR("Oplus H.40 DE/user discovery failed; refusing to continue with an empty user map\n");
++							return;
++						}
++#endif
+ 					}
+ 
+ 				} else {
+@@ -2139,31 +2159,56 @@ int TWPartitionManager::Decrypt_Device(string Password, int user_id) {
+ 		int retry_count = 10;
+ 		while (!TWFunc::Path_Exists("/data/system/users/gatekeeper.password.key") && --retry_count)
+ 			usleep(2000); // A small sleep is needed after mounting /data to ensure reliable decrypt...maybe because of DE?
+ 		gui_msg(Msg("decrypting_user_fbe=Attempting to decrypt FBE for user {1}...")(user_id));
+-		if (android::keystore::Decrypt_User(user_id, Password)) {
++		bool decrypt_success = false;
++		bool try_generic_decrypt = true;
++#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
++		const twrp::oplus_h40::Result oplus_result =
++			twrp::oplus_h40::DecryptUser(Password, user_id);
++		if (oplus_result == twrp::oplus_h40::Result::kSuccess) {
++			decrypt_success = true;
++			try_generic_decrypt = false;
++		} else if (oplus_result == twrp::oplus_h40::Result::kFailure) {
++			// Avoid a second gatekeeper attempt and unintended rate limiting.
++			try_generic_decrypt = false;
++		}
++#endif
++		if (try_generic_decrypt) {
++			decrypt_success = android::keystore::Decrypt_User(user_id, Password);
++		}
++		if (decrypt_success) {
+ 			gui_msg(Msg("decrypt_user_success_fbe=User {1} Decrypted Successfully")(user_id));
+ 			Mark_User_Decrypted(user_id);
+ 			if (user_id == 0) {
++				bool decrypt_secondary_users = true;
++#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
++				if (oplus_result == twrp::oplus_h40::Result::kSuccess) {
++					decrypt_secondary_users = false;
++					LOGINFO("Oplus H.40 user 0 decrypted; leaving secondary users for explicit attempts\n");
++				}
++#endif
++				if (decrypt_secondary_users) {
+ 				// When decrypting user 0 also try all other users
+ 				std::vector<users_struct>::iterator iter;
+ 				for (iter = Users_List.begin(); iter != Users_List.end(); iter++) {
+ 					if ((*iter).userId == "0" || (*iter).isDecrypted)
+ 						continue;
+ 
+ 					int tmp_user_id = atoi((*iter).userId.c_str());
+ 					gui_msg(Msg("decrypting_user_fbe=Attempting to decrypt FBE for user {1}...")(tmp_user_id));
+ 					if (android::keystore::Decrypt_User(tmp_user_id, Password) ||
+ 					(Password != "!" && android::keystore::Decrypt_User(tmp_user_id, "!"))) { // "!" means default password
+ 						gui_msg(Msg("decrypt_user_success_fbe=User {1} Decrypted Successfully")(tmp_user_id));
+ 						Mark_User_Decrypted(tmp_user_id);
+ 					} else {
+ 						gui_msg(Msg("decrypt_user_fail_fbe=Failed to decrypt user {1}")(tmp_user_id));
+ 					}
+ 				}
++				}
+ 				Post_Decrypt("");
+ 			}
+ 
+ 			return 0;
+ 		} else {
+ 			gui_msg(Msg(msg::kError, "decrypt_user_fail_fbe=Failed to decrypt user {1}")(user_id));
+ 		}
