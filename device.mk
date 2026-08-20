@@ -6,12 +6,6 @@
 $(call inherit-product, $(SRC_TARGET_DIR)/product/product_launched_with_p.mk)
 $(call inherit-product, device/oneplus/sm8150-common/common.mk)
 
-# The supported H.40 conversion creates a real /dev/block/by-name/super.
-# TWRP only needs runtime liblp support; this recovery-only product must not
-# construct a source-built super image or claim retrofit dynamic partitions.
-PRODUCT_USE_DYNAMIC_PARTITIONS := true
-PRODUCT_BUILD_SUPER_PARTITION := false
-
 # Get non-open-source specific aspects
 #$(call inherit-product, vendor/oneplus/guacamole/guacamole-vendor.mk)
 
@@ -67,7 +61,6 @@ RECOVERY_SDCARD_ON_DATA := true
 TARGET_RECOVERY_QCOM_RTC_FIX := true
 TW_EXCLUDE_DEFAULT_USB_INIT := true
 TW_EXTRA_LANGUAGES := false
-TW_INCLUDE_FASTBOOTD := true
 TW_INCLUDE_NTFS_3G := true
 TW_USE_TOOLBOX := true
 TW_INCLUDE_RESETPROP := true
