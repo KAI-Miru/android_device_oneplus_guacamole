@@ -34,7 +34,7 @@ jobs:
       KERNEL_PATH: kernel/oneplus/sm8150
       RECOVERY_REVISION: 5c3d206a5eeb3d446bcda8248a405a4b278bab5c
       ADAPTER_PATCH_REL: ci/twrp-oplus-h40-decrypt.patch
-      ADAPTER_PATCH_SHA256: 2be8fdca372cffd352066eb852292967642cfb1e7d9a5e41e54c2389f0d412ed
+      ADAPTER_PATCH_SHA256: 81046f75eea3b1445f8e994cd9b6b62a48de8799bc4777dd2a2c3ec70e391020
       BUILD_TARGET: recovery
       RECOVERY_BINARY_REL: out/target/product/guacamole/recovery/root/system/bin/recovery
       BUILD_JOBS: "4"

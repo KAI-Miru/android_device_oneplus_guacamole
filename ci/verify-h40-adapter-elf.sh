@@ -63,15 +63,33 @@ check_string dlsym_get_password_type '_Z17get_password_typei'
 check_string dlsym_init_user0_ce '_Z21fscrypt_init_user0_cev'
 check_string dlsym_mount_metadata \
   '_Z32fscrypt_mount_metadata_encryptedRKNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEE'
+
+check_string runtime_cryptoeng_fqname \
+  'vendor.oplus.hardware.cryptoeng@1.0::ICryptoeng'
+check_string runtime_system_ce_path '/data/system_ce/0'
+check_string runtime_media_ce_path '/data/media/0'
+
 check_string log_marker_abi 'I:Oplus H.40 decrypt ABI loaded'
-check_string log_marker_metadata_stop \
-  'E:Oplus H.40 metadata setup failed; refusing FDE fallback'
-check_string log_marker_setup_stop \
-  'E:Oplus H.40 metadata or DE/user discovery previously failed; refusing another setup attempt'
-check_string log_marker_credential_stop \
-  'E:Oplus H.40 metadata or DE/user discovery previously failed; refusing credential handling'
-check_string log_marker_no_lock_recheck \
-  'I:Oplus H.40 rechecking no-credential user 0 CE postcondition'
+check_string log_marker_activation \
+  'I:Oplus H.40 v3 adapter activated; generic keystore2 fallback is now forbidden'
+check_string log_marker_cryptoeng_ready \
+  'I:Oplus H.40 v3 ICryptoeng/default binderized get+ping ready after %d stable samples'
+check_string log_marker_de_bypass \
+  'I:Oplus H.40 v3 bypassing generic TWRP keystore2 DE/user discovery'
+check_string log_marker_policy \
+  'I:Oplus H.40 v3 FS_IOC_GET_ENCRYPTION_POLICY_EX version=%u for %s'
+check_string log_marker_key_present \
+  'I:Oplus H.40 v3 FS_IOC_GET_ENCRYPTION_KEY_STATUS PRESENT for %s: status=%u'
+check_string log_marker_key_not_present \
+  'E:Oplus H.40 v3 FS_IOC_GET_ENCRYPTION_KEY_STATUS not PRESENT for %s: status=%u'
+check_string log_marker_fatal \
+  'E:Oplus H.40 v3 adapter entered process-lifetime fatal state: %s'
+check_string log_marker_active_unavailable \
+  'E:Oplus H.40 active adapter returned unavailable; refusing generic credential fallback'
+check_string log_marker_no_lock_success \
+  'I:Oplus H.40 v3 no-lock user 0 CE postcondition satisfied'
+check_string log_marker_credential_success \
+  'I:Oplus H.40 v3 user 0 CE postcondition satisfied'
 
 sha256sum "$recovery_elf" > "$report_dir/recovery-elf.sha256"
 {
@@ -81,8 +99,10 @@ sha256sum "$recovery_elf" > "$report_dir/recovery-elf.sha256"
 
 {
   echo "result=pass"
+  echo "adapter_version=v3"
   echo "required_dlsym_strings=5"
-  echo "required_log_markers=5"
+  echo "required_runtime_strings=3"
+  echo "required_log_markers=11"
   echo "dlopen_library_string=present"
   echo "dt_needed_libdl=present"
   echo "dt_needed_libdecrypt_recovery=absent"
