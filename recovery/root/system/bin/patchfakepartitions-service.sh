@@ -1,10 +1,13 @@
 #!/system/bin/sh
 # This script is needed to permananetly keep reserve_a and reserve_b fake partitions and /data/reserve/reserve.img and to keep india_a and india_b fake partitions and /data/india/india.img.
 
-n=1
+# A converted H.40 device has a real super partition. Do not create fake
+# by-name entries that can race or shadow liblp's logical devices there.
+if [ -e /dev/block/by-name/super ] || [ -e /dev/block/bootdevice/by-name/super ]; then
+    exit 0
+fi
 
-while [ $n -le 2 ]
-do
+for n in 1 2; do
 # Check if already exist the /data/reserve directory symlink and create it
 if [ -d /data/reserve ];
 then

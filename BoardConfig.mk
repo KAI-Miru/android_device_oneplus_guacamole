@@ -24,7 +24,9 @@ TARGET_SCREEN_DENSITY := 560
 # TARGET_RECOVERY_DEVICE_MODULES := libinit_guacamole
 
 # Partitions
-BOARD_BUILD_SYSTEM_ROOT_IMAGE := true
+# The H.40 recovery ramdisk uses a ramdisk root. The converted layout exposes
+# the OS partitions through super, and dynamic-partition builds reject SAR.
+BOARD_BUILD_SYSTEM_ROOT_IMAGE := false
 BOARD_BOOTIMAGE_PARTITION_SIZE := 100663296
 BOARD_DTBOIMG_PARTITION_SIZE := 25165824
 BOARD_ODMIMAGE_PARTITION_SIZE := 104857600
@@ -40,7 +42,7 @@ TARGET_PRODUCT_PROP += $(DEVICE_PATH)/product.prop
 # Recovery
 BOARD_USES_RECOVERY_AS_BOOT := true
 TARGET_NO_RECOVERY := true
-#TARGET_RECOVERY_FSTAB := $(DEVICE_PATH)/rootdir/etc/fstab.qcom
+TARGET_RECOVERY_FSTAB := $(DEVICE_PATH)/recovery/root/system/etc/recovery.fstab
 
 # Sensors
 SOONG_CONFIG_ONEPLUS_MSMNILE_SENSORS_ALS_POS_X := 1000

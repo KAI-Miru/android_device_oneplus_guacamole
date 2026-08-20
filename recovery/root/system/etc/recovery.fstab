@@ -1,20 +1,30 @@
-# Android fstab file.
-# The filesystem that contains the filesystem checker binary (typically /system) cannot
-# specify MF_CHECK, and must come before any filesystems that do specify MF_CHECK
+# Android recovery fstab for the converted ColorOS 12.1 H.40 super layout.
+#
+# H.40's stock recovery fstab marks these volumes logical. The supplied H.40
+# images are ext4, while other Android 12 payloads may use EROFS, so retain
+# both filesystem alternatives for each shared logical mount point.
+# TWRP normalizes /system to /system_root internally. Using /system_root here
+# also lets the identically keyed twrp.flags entry apply before normalization.
+# first_stage_mount belongs to Android init and is not a TWRP partition flag.
 
-#TODO: Add 'check' as fs_mgr_flags with data partition.
-# Currently we dont have e2fsck compiled. So fs check would failed.
+#<src>          <mnt_point>       <type>  <mnt_flags and options>                 <fs_mgr_flags>
+system          /system_root      ext4    ro,barrier=1,discard                    wait,slotselect,logical
+system          /system_root      erofs   ro                                      wait,slotselect,logical
+vendor          /vendor           ext4    ro,barrier=1,discard                    wait,slotselect,logical
+vendor          /vendor           erofs   ro                                      wait,slotselect,logical
+odm             /odm              ext4    ro,barrier=1,discard                    wait,slotselect,logical
+odm             /odm              erofs   ro                                      wait,slotselect,logical
+product         /product          ext4    ro,barrier=1,discard                    wait,slotselect,logical
+product         /product          erofs   ro                                      wait,slotselect,logical
+my_product      /my_product       ext4    ro,barrier=1,discard                    wait,slotselect,logical
+my_product      /my_product       erofs   ro                                      wait,slotselect,logical
+my_engineering  /my_engineering   ext4    ro,barrier=1                            wait,slotselect,logical
+my_engineering  /my_engineering   erofs   ro                                      wait,slotselect,logical
 
-#<src>                                                 <mnt_point>            <type>  <mnt_flags and options>                            <fs_mgr_flags>
-/dev/block/bootdevice/by-name/system                    /                      ext4    ro,barrier=1,discard                                 wait,slotselect
-/dev/block/bootdevice/by-name/system                    /                      erofs   ro                                                   wait,slotselect
-/dev/block/bootdevice/by-name/metadata                  /metadata              ext4    noatime,nosuid,nodev,discard                         wait,check,formattable
-/dev/block/bootdevice/by-name/userdata                  /data                  ext4    noatime,nosuid,nodev,barrier=1,noauto_da_alloc,discard,inlinecrypt latemount,wait,check,fileencryption=ice,keydirectory=/metadata/vold/metadata_encryption,quota,reservedsize=512M
-/dev/block/bootdevice/by-name/userdata                  /data                  f2fs    noatime,nosuid,nodev,discard,inlinecrypt latemount,wait,check,fileencryption=ice,keydirectory=/metadata/vold/metadata_encryption,quota,formattable,reservedsize=128M
-# Need to have this entry in here even though the mount point itself is no longer needed.
-# The update_engine code looks for this entry in order to determine the boot device address
-# and fails if it does not find it.
-/dev/block/bootdevice/by-name/misc                      /misc                  emmc    defaults                                             defaults
-/dev/block/bootdevice/by-name/boot                      /boot                  emmc    defaults                                             defaults
-/dev/block/bootdevice/by-name/recovery                  /recovery              emmc    defaults                                             defaults
+/dev/block/bootdevice/by-name/metadata  /metadata  ext4  noatime,nosuid,nodev,discard  wait,check,formattable
+/dev/block/bootdevice/by-name/userdata  /data      ext4  noatime,nosuid,nodev,barrier=1,noauto_da_alloc,discard,inlinecrypt  latemount,wait,check,formattable,fileencryption=ice,keydirectory=/metadata/vold/metadata_encryption,quota,reservedsize=128M
+/dev/block/bootdevice/by-name/userdata  /data      f2fs  noatime,nosuid,nodev,discard,inlinecrypt                           latemount,wait,check,formattable,fileencryption=ice,keydirectory=/metadata/vold/metadata_encryption,quota,reservedsize=128M
 
+# update_engine requires a misc entry to discover the boot device.
+/dev/block/bootdevice/by-name/misc      /misc      emmc  defaults  defaults
+/dev/block/bootdevice/by-name/boot      /boot      emmc  defaults  slotselect
