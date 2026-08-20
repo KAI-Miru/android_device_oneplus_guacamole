@@ -11,7 +11,7 @@ permissions:
 
 concurrency:
   group: guacamole-twrp12-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -25,7 +25,7 @@ jobs:
       COMMON_PATH: device/oneplus/sm8150-common
       ONEPLUS_COMMON_PATH: device/oneplus/common
       KERNEL_PATH: kernel/oneplus/sm8150
-      BUILD_TARGET: bootimage
+      BUILD_TARGET: out/target/product/guacamole/ramdisk-recovery.img
       BUILD_JOBS: "4"
       LC_ALL: C
       TZ: UTC
@@ -128,7 +128,7 @@ jobs:
           build/soong/soong_ui.bash --dumpvars-mode \
             --vars="TARGET_PRODUCT TARGET_DEVICE TARGET_ARCH PLATFORM_VERSION"
 
-      - name: Build guacamole boot image
+      - name: Build guacamole recovery ramdisk
         id: build
         shell: bash
         run: |
@@ -142,24 +142,24 @@ jobs:
           mka "$BUILD_TARGET" -j"$BUILD_JOBS" 2>&1 \
             | tee "$GITHUB_WORKSPACE/build.log"
 
-      - name: Collect successful image
+      - name: Collect successful ramdisk
         if: steps.build.outcome == 'success'
         run: |
-          image="$RUNNER_TEMP/twrp/out/target/product/guacamole/boot.img"
-          test -f "$image"
-          cp "$image" "$GITHUB_WORKSPACE/twrp-guacamole-current-12.1.img"
+          ramdisk="$RUNNER_TEMP/twrp/out/target/product/guacamole/ramdisk-recovery.img"
+          test -f "$ramdisk"
+          cp "$ramdisk" "$GITHUB_WORKSPACE/twrp-guacamole-current-12.1-ramdisk.img"
           cd "$GITHUB_WORKSPACE"
-          sha256sum twrp-guacamole-current-12.1.img \
-            | tee twrp-guacamole-current-12.1.img.sha256
+          sha256sum twrp-guacamole-current-12.1-ramdisk.img \
+            | tee twrp-guacamole-current-12.1-ramdisk.img.sha256
 
-      - name: Upload image
+      - name: Upload recovery ramdisk
         if: steps.build.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: guacamole-current-twrp12-image
+          name: guacamole-current-twrp12-ramdisk
           path: |
-            twrp-guacamole-current-12.1.img
-            twrp-guacamole-current-12.1.img.sha256
+            twrp-guacamole-current-12.1-ramdisk.img
+            twrp-guacamole-current-12.1-ramdisk.img.sha256
           if-no-files-found: error
           retention-days: 14
 
@@ -174,3 +174,4 @@ jobs:
             build.log
           if-no-files-found: warn
           retention-days: 14
+
