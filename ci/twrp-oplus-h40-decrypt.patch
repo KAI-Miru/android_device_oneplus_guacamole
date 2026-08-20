@@ -1,8 +1,8 @@
 diff --git a/Android.mk b/Android.mk
-index 383adca..db2f73f 100644
+index 383adca55ab51a331df5236366d6e4dfbd5172bc..db2f73f8f425e3b096434eb4f9ca76f9aad19ef1 100644
 --- a/Android.mk
 +++ b/Android.mk
-@@ -334,6 +334,11 @@ endif
+@@ -335,6 +335,11 @@ endif
  ifeq ($(TW_INCLUDE_CRYPTO), true)
      LOCAL_CFLAGS += -DTW_INCLUDE_CRYPTO -DUSE_FSCRYPT -Wno-macro-redefined
      LOCAL_SHARED_LIBRARIES += libgpt_twrp
@@ -16,10 +16,10 @@ index 383adca..db2f73f 100644
      LOCAL_CFLAGS += -DTW_INCLUDE_FBE
 diff --git a/oplus_h40_decrypt.cpp b/oplus_h40_decrypt.cpp
 new file mode 100644
-index 0000000..6a80aba
+index 0000000000000000000000000000000000000000..27afa1f21d7a69c49d7329291e8fbad7a9478ca0
 --- /dev/null
 +++ b/oplus_h40_decrypt.cpp
-@@ -0,0 +1,158 @@
+@@ -0,0 +1,176 @@
 +#include "oplus_h40_decrypt.hpp"
 +
 +#include <dlfcn.h>
@@ -58,6 +58,7 @@ index 0000000..6a80aba
 +
 +struct RuntimeState {
 +    bool setup_invoked = false;
++    bool user0_no_credential = false;
 +    bool user0_ce_ready = false;
 +};
 +
@@ -105,6 +106,10 @@ index 0000000..6a80aba
 +    return state;
 +}
 +
++void ResetForNewMetadataMapping() {
++    GetRuntimeState() = {};
++}
++
 +void EnsureDeSetup(const Api& api) {
 +    RuntimeState& state = GetRuntimeState();
 +    if (state.setup_invoked) return;
@@ -125,6 +130,7 @@ index 0000000..6a80aba
 +    const int password_type = api.get_password_type(0);
 +    LOGINFO("Oplus H.40 password type for user 0 returned %d\n", password_type);
 +    if (password_type == -1) {
++        state.user0_no_credential = true;
 +        state.user0_ce_ready = api.init_user0_ce();
 +        LOGINFO("Oplus H.40 no-credential CE postcondition returned %d\n",
 +                state.user0_ce_ready);
@@ -141,6 +147,7 @@ index 0000000..6a80aba
 +    LOGINFO("Oplus H.40 metadata mount for %s returned %d\n", mount_point.c_str(), mounted);
 +    if (!mounted) return Result::kFailure;
 +
++    ResetForNewMetadataMapping();
 +    EnsureDeSetup(api);
 +    return Result::kSuccess;
 +}
@@ -158,7 +165,18 @@ index 0000000..6a80aba
 +    EnsureDeSetup(api);
 +
 +    if (password == "!") {
-+        return GetRuntimeState().user0_ce_ready ? Result::kSuccess : Result::kUnavailable;
++        RuntimeState& state = GetRuntimeState();
++        if (!state.user0_no_credential) return Result::kUnavailable;
++
++        // Recheck the current mapping instead of trusting the cached result.
++        // Once the OEM no-credential path has been selected, a failed CE
++        // postcondition is authoritative and must not fall through to a second
++        // implementation over partially initialized state.
++        LOGINFO("Oplus H.40 rechecking no-credential user 0 CE postcondition\n");
++        state.user0_ce_ready = api.init_user0_ce();
++        LOGINFO("Oplus H.40 no-credential user 0 CE recheck returned %d\n",
++                state.user0_ce_ready);
++        return state.user0_ce_ready ? Result::kSuccess : Result::kFailure;
 +    }
 +
 +    LOGINFO("Oplus H.40 invoking credential verify for user %d\n", user_id);
@@ -180,7 +198,7 @@ index 0000000..6a80aba
 +}  // namespace twrp
 diff --git a/oplus_h40_decrypt.hpp b/oplus_h40_decrypt.hpp
 new file mode 100644
-index 0000000..b4b8ad6
+index 0000000000000000000000000000000000000000..b4b8ad654b3f9cc68368917237b276e177c5fe15
 --- /dev/null
 +++ b/oplus_h40_decrypt.hpp
 @@ -0,0 +1,23 @@
@@ -208,24 +226,41 @@ index 0000000..b4b8ad6
 +}  // namespace oplus_h40
 +}  // namespace twrp
 diff --git a/partitionmanager.cpp b/partitionmanager.cpp
-index 2766b4c..4a12bd2 100755
+index 2766b4c07ad77d364069af7afcd18d537fab238d..7c5e4ffdade6b9abac475fa0056718207bb5c941 100755
 --- a/partitionmanager.cpp
 +++ b/partitionmanager.cpp
-@@ -106,6 +106,10 @@ extern "C" {
+@@ -112,6 +112,14 @@ extern "C" {
  #endif
  #endif
  
 +#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
 +#include "oplus_h40_decrypt.hpp"
++
++namespace {
++bool g_oplus_h40_decrypt_blocked = false;
++}
 +#endif
 +
  #ifdef AB_OTA_UPDATER
  #include <android/hardware/boot/1.0/IBootControl.h>
  using android::hardware::boot::V1_0::CommandResult;
-@@ -595,6 +599,20 @@ void TWPartitionManager::Decrypt_Data() {
+@@ -586,6 +594,12 @@ int TWPartitionManager::Write_Fstab(void) {
+ void TWPartitionManager::Decrypt_Data() {
+ 	#ifdef TW_INCLUDE_CRYPTO
+ 	TWPartition* Decrypt_Data = Find_Partition_By_Path("/data");
++#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
++	if (g_oplus_h40_decrypt_blocked) {
++		LOGERR("Oplus H.40 metadata or DE/user discovery previously failed; refusing another setup attempt\n");
++		return;
++	}
++#endif
+ 	if (Decrypt_Data && Decrypt_Data->Is_Encrypted && !Decrypt_Data->Is_Decrypted) {
+ 		Set_Crypto_State();
+ 		TWPartition* Key_Directory_Partition = Find_Partition_By_Path(Decrypt_Data->Key_Directory);
+@@ -596,7 +610,25 @@ void TWPartitionManager::Decrypt_Data() {
+ 			Set_Crypto_Type("file");
  #ifdef TW_INCLUDE_FBE_METADATA_DECRYPT
  #ifdef USE_FSCRYPT
--			if (android::vold::fscrypt_mount_metadata_encrypted(Decrypt_Data->Actual_Block_Device, Decrypt_Data->Mount_Point, false, false, Decrypt_Data->Current_File_System, TWFunc::Path_Exists(additional_fstab) ? additional_fstab : "")) {
 +#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
 +			bool metadata_mounted = false;
 +			bool oplus_metadata_used = false;
@@ -236,22 +271,25 @@ index 2766b4c..4a12bd2 100755
 +				oplus_metadata_used = true;
 +			} else if (oplus_metadata == twrp::oplus_h40::Result::kUnavailable) {
 +				metadata_mounted = android::vold::fscrypt_mount_metadata_encrypted(Decrypt_Data->Actual_Block_Device, Decrypt_Data->Mount_Point, false, false, Decrypt_Data->Current_File_System, TWFunc::Path_Exists(additional_fstab) ? additional_fstab : "");
++			} else {
++				g_oplus_h40_decrypt_blocked = true;
++				LOGERR("Oplus H.40 metadata setup failed; refusing FDE fallback\n");
++				return;
 +			}
 +			if (metadata_mounted) {
 +#else
-+			if (android::vold::fscrypt_mount_metadata_encrypted(Decrypt_Data->Actual_Block_Device, Decrypt_Data->Mount_Point, false, false, Decrypt_Data->Current_File_System, TWFunc::Path_Exists(additional_fstab) ? additional_fstab : "")) {
+ 			if (android::vold::fscrypt_mount_metadata_encrypted(Decrypt_Data->Actual_Block_Device, Decrypt_Data->Mount_Point, false, false, Decrypt_Data->Current_File_System, TWFunc::Path_Exists(additional_fstab) ? additional_fstab : "")) {
 +#endif
  				std::string crypto_blkdev = android::base::GetProperty("ro.crypto.fs_crypto_blkdev", "error");
  				Decrypt_Data->Decrypted_Block_Device = crypto_blkdev;
  				LOGINFO("Successfully decrypted metadata encrypted data partition with new block device: '%s'\n", crypto_blkdev.c_str());
-@@ -605,8 +619,14 @@ void TWPartitionManager::Decrypt_Data() {
- 				while (!Decrypt_Data->Mount(false) && --retry_count)
- 					usleep(500);
+@@ -608,10 +640,24 @@ void TWPartitionManager::Decrypt_Data() {
  				if (Decrypt_Data->Mount(false)) {
  					if (!Decrypt_Data->Decrypt_FBE_DE()) {
  						LOGERR("Unable to decrypt FBE device\n");
 +#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
 +						if (oplus_metadata_used) {
++							g_oplus_h40_decrypt_blocked = true;
 +							LOGERR("Oplus H.40 DE/user discovery failed; refusing to continue with an empty user map\n");
 +							return;
 +						}
@@ -259,8 +297,61 @@ index 2766b4c..4a12bd2 100755
  					}
  
  				} else {
-@@ -2139,31 +2159,56 @@ int TWPartitionManager::Decrypt_Device(string Password, int user_id) {
- 		int retry_count = 10;
+ 					LOGINFO("Failed to mount data after metadata decrypt\n");
++#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
++					if (oplus_metadata_used) {
++						g_oplus_h40_decrypt_blocked = true;
++						LOGERR("Oplus H.40 data mount failed after metadata setup; refusing FDE fallback\n");
++						return;
++					}
++#endif
+ 				}
+ 			} else {
+ 				LOGINFO("Unable to decrypt metadata encryption\n");
+@@ -2105,6 +2151,12 @@ void TWPartitionManager::Check_Users_Decryption_Status() {
+ 
+ int TWPartitionManager::Decrypt_Device(string Password, int user_id) {
+ #ifdef TW_INCLUDE_CRYPTO
++	#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
++	if (g_oplus_h40_decrypt_blocked) {
++		LOGERR("Oplus H.40 metadata or DE/user discovery previously failed; refusing credential handling\n");
++		return -1;
++	}
++	#endif
+ 	char crypto_blkdev[PROPERTY_VALUE_MAX];
+ 	std::vector<TWPartition*>::iterator iter;
+ 
+@@ -2125,12 +2177,29 @@ int TWPartitionManager::Decrypt_Device(string Password, int user_id) {
+ 			return -1;
+ 
+ 		bool user_need_decrypt = false;
++		#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
++		bool user_found = false;
++		#endif
+ 		std::vector<users_struct>::iterator iter;
+ 		for (iter = Users_List.begin(); iter != Users_List.end(); iter++) {
++			#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
++			if (atoi((*iter).userId.c_str()) == user_id) {
++				user_found = true;
++				if (!(*iter).isDecrypted)
++					user_need_decrypt = true;
++			}
++			#else
+ 			if (atoi((*iter).userId.c_str()) == user_id && !(*iter).isDecrypted) {
+ 				user_need_decrypt = true;
+ 			}
++			#endif
++		}
++		#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
++		if (!user_found) {
++			LOGERR("Oplus H.40 user %d is absent from the discovered FBE user map; refusing credential handling\n", user_id);
++			return -1;
+ 		}
++		#endif
+ 		if (!user_need_decrypt) {
+ 			LOGINFO("User %d does not require decryption\n", user_id);
+ 			return 0;
+@@ -2140,10 +2209,34 @@ int TWPartitionManager::Decrypt_Device(string Password, int user_id) {
  		while (!TWFunc::Path_Exists("/data/system/users/gatekeeper.password.key") && --retry_count)
  			usleep(2000); // A small sleep is needed after mounting /data to ensure reliable decrypt...maybe because of DE?
  		gui_msg(Msg("decrypting_user_fbe=Attempting to decrypt FBE for user {1}...")(user_id));
@@ -296,16 +387,7 @@ index 2766b4c..4a12bd2 100755
  				// When decrypting user 0 also try all other users
  				std::vector<users_struct>::iterator iter;
  				for (iter = Users_List.begin(); iter != Users_List.end(); iter++) {
- 					if ((*iter).userId == "0" || (*iter).isDecrypted)
- 						continue;
- 
- 					int tmp_user_id = atoi((*iter).userId.c_str());
- 					gui_msg(Msg("decrypting_user_fbe=Attempting to decrypt FBE for user {1}...")(tmp_user_id));
- 					if (android::keystore::Decrypt_User(tmp_user_id, Password) ||
- 					(Password != "!" && android::keystore::Decrypt_User(tmp_user_id, "!"))) { // "!" means default password
- 						gui_msg(Msg("decrypt_user_success_fbe=User {1} Decrypted Successfully")(tmp_user_id));
- 						Mark_User_Decrypted(tmp_user_id);
- 					} else {
+@@ -2160,6 +2253,7 @@ int TWPartitionManager::Decrypt_Device(string Password, int user_id) {
  						gui_msg(Msg("decrypt_user_fail_fbe=Failed to decrypt user {1}")(tmp_user_id));
  					}
  				}
@@ -313,7 +395,3 @@ index 2766b4c..4a12bd2 100755
  				Post_Decrypt("");
  			}
  
- 			return 0;
- 		} else {
- 			gui_msg(Msg(msg::kError, "decrypt_user_fail_fbe=Failed to decrypt user {1}")(user_id));
- 		}

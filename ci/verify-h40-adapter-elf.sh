@@ -63,7 +63,15 @@ check_string dlsym_get_password_type '_Z17get_password_typei'
 check_string dlsym_init_user0_ce '_Z21fscrypt_init_user0_cev'
 check_string dlsym_mount_metadata \
   '_Z32fscrypt_mount_metadata_encryptedRKNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEE'
-check_string log_marker 'Oplus H.40 decrypt ABI loaded'
+check_string log_marker_abi 'Oplus H.40 decrypt ABI loaded'
+check_string log_marker_metadata_stop \
+  'Oplus H.40 metadata setup failed; refusing FDE fallback'
+check_string log_marker_setup_stop \
+  'Oplus H.40 metadata or DE/user discovery previously failed; refusing another setup attempt'
+check_string log_marker_credential_stop \
+  'Oplus H.40 metadata or DE/user discovery previously failed; refusing credential handling'
+check_string log_marker_no_lock_recheck \
+  'Oplus H.40 rechecking no-credential user 0 CE postcondition'
 
 sha256sum "$recovery_elf" > "$report_dir/recovery-elf.sha256"
 {
@@ -74,7 +82,7 @@ sha256sum "$recovery_elf" > "$report_dir/recovery-elf.sha256"
 {
   echo "result=pass"
   echo "required_dlsym_strings=5"
-  echo "required_log_markers=1"
+  echo "required_log_markers=5"
   echo "dlopen_library_string=present"
   echo "dt_needed_libdl=present"
   echo "dt_needed_libdecrypt_recovery=absent"

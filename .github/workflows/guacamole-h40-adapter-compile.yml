@@ -34,7 +34,7 @@ jobs:
       KERNEL_PATH: kernel/oneplus/sm8150
       RECOVERY_REVISION: 5c3d206a5eeb3d446bcda8248a405a4b278bab5c
       ADAPTER_PATCH_REL: ci/twrp-oplus-h40-decrypt.patch
-      ADAPTER_PATCH_SHA256: 0f0059c8b8415075ef5e96755160e8f8d03a5f66958a403de4fccc86fb04736d
+      ADAPTER_PATCH_SHA256: 2be8fdca372cffd352066eb852292967642cfb1e7d9a5e41e54c2389f0d412ed
       BUILD_TARGET: recovery
       RECOVERY_BINARY_REL: out/target/product/guacamole/recovery/root/system/bin/recovery
       BUILD_JOBS: "4"
@@ -217,7 +217,9 @@ jobs:
 
       - name: Configure guacamole adapter gate
         run: |
-          set -euo pipefail
+          # Android's envsetup functions intentionally probe unset variables and
+          # are not compatible with Bash nounset mode.
+          set -eo pipefail
           cd "$RUNNER_TEMP/twrp"
           export ALLOW_MISSING_DEPENDENCIES=true
           export BUILD_USERNAME=KAI-Miru
@@ -246,8 +248,8 @@ jobs:
         id: build
         shell: bash
         run: |
-          set -euo pipefail
-          set -o pipefail
+          # Keep nounset disabled while using Android's envsetup/build helpers.
+          set -eo pipefail
           cd "$RUNNER_TEMP/twrp"
           export ALLOW_MISSING_DEPENDENCIES=true
           export BUILD_USERNAME=KAI-Miru
