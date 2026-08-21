@@ -3,7 +3,8 @@ name: Build guacamole on current TWRP 12.1
 on:
   push:
     branches:
-      - codex/guacamole-twrp12-latest
+  - codex/guacamole-twrp12-latest
+  - codex/guacamole-twrp12-v3-artifact-fix
   workflow_dispatch:
 
 permissions:
