@@ -37,7 +37,6 @@ jobs:
       RECOVERY_REVISION: 5c3d206a5eeb3d446bcda8248a405a4b278bab5c
       VOLD_REVISION: a164ba05c5fef288059774a776b2e6e1119957cf
       HIDL_REFERENCE_REVISION: f0f84e9646c303db32dc38e5c8faaa93cecf4736
-      HIDL_REFERENCE_PATH: external/h40-vold-hidl-reference
       V3_PATCH_REL: ci/twrp-oplus-h40-decrypt.patch
       V3_PATCH_SHA256: 81046f75eea3b1445f8e994cd9b6b62a48de8799bc4777dd2a2c3ec70e391020
       V41_TRANSFORM_REL: ci/apply-h40-v41-hidl.py
@@ -78,7 +77,7 @@ jobs:
           git config --global user.name "TWRP CI"
           git config --global user.email "twrp-ci@users.noreply.github.com"
 
-      - name: Sync pinned TWRP and direct-HIDL reference
+      - name: Sync pinned TWRP
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/twrp"
@@ -116,10 +115,6 @@ jobs:
                      remote="github"
                      revision="android-12.1"
                      clone-depth="1" />
-            <project path="$HIDL_REFERENCE_PATH"
-                     name="4accccc/android_system_vold"
-                     remote="github"
-                     revision="$HIDL_REFERENCE_REVISION" />
           </manifest>
           EOF
           "$HOME/bin/repo" sync --force-sync --no-clone-bundle --no-tags \
@@ -127,7 +122,21 @@ jobs:
 
           test "$(git -C bootable/recovery rev-parse HEAD)" = "$RECOVERY_REVISION"
           test "$(git -C system/vold rev-parse HEAD)" = "$VOLD_REVISION"
-          test "$(git -C "$HIDL_REFERENCE_PATH" rev-parse HEAD)" = "$HIDL_REFERENCE_REVISION"
+
+      - name: Checkout pinned direct-HIDL reference outside Soong tree
+        run: |
+          set -euo pipefail
+          ref="$RUNNER_TEMP/h40-vold-hidl-reference"
+          rm -rf "$ref"
+          git init "$ref"
+          git -C "$ref" remote add origin https://github.com/4accccc/android_system_vold.git
+          git -C "$ref" fetch --depth=1 origin "$HIDL_REFERENCE_REVISION"
+          git -C "$ref" checkout --detach FETCH_HEAD
+          test "$(git -C "$ref" rev-parse HEAD)" = "$HIDL_REFERENCE_REVISION"
+
+          # The reference is input data only. It must never be visible to Soong,
+          # otherwise its Android.bp duplicates the real system/vold modules.
+          test ! -e "$RUNNER_TEMP/twrp/external/h40-vold-hidl-reference"
 
       - name: Apply reviewed V3, V4 hybrid, and V4.1 HIDL transform
         run: |
@@ -136,6 +145,8 @@ jobs:
 
           v3_patch="$PWD/$DEVICE_PATH/$V3_PATCH_REL"
           v41_transform="$PWD/$DEVICE_PATH/$V41_TRANSFORM_REL"
+          hidl_reference="$RUNNER_TEMP/h40-vold-hidl-reference"
+
           printf '%s  %s\n' "$V3_PATCH_SHA256" "$v3_patch" | sha256sum --check -
           python3 -m py_compile \
             "$PWD/$DEVICE_PATH/ci/apply-h40-v4-hybrid.py" \
@@ -148,7 +159,7 @@ jobs:
           python3 "$v41_transform" \
             "$PWD/bootable/recovery" \
             "$PWD/system/vold" \
-            "$PWD/$HIDL_REFERENCE_PATH"
+            "$hidl_reference"
 
           git -C bootable/recovery add -- \
             Android.mk oplus_h40_decrypt.cpp oplus_h40_decrypt.hpp partitionmanager.cpp
@@ -174,6 +185,12 @@ jobs:
             exit 1
           fi
 
+          # Guard the exact failure seen in run 32529573084.
+          if find "$PWD" -path '*/h40-vold-hidl-reference/Android.bp' -print -quit | grep -q .; then
+            echo 'HIDL reference Android.bp leaked into the Soong source tree' >&2
+            exit 1
+          fi
+
           printf '\n# CI-only: compile/link the H.40 V4.1 direct-HIDL adapter.\n' \
             >> "$DEVICE_PATH/BoardConfig.mk"
           printf 'TW_INCLUDE_OPLUS_H40_DECRYPT := true\n' \
@@ -193,7 +210,13 @@ jobs:
             echo "metadata_keymaster=H40_Keymaster_4_0_HIDL_default"
             echo "de_ce_backend=Oplus_H40_libdecrypt_recovery"
             echo "keystore2_runtime=not_required"
+            echo "hidl_reference_location=outside_soong_tree"
           } | tee "$GITHUB_WORKSPACE/build-provenance.txt"
+
+          # These must remain identical to the source trees from failed run
+          # 32529573084; this retry changes only reference checkout placement.
+          test "$(git -C bootable/recovery write-tree)" = be1c8eeb357b7115992bac45388ef870a6761873
+          test "$(git -C system/vold write-tree)" = 7e15845f3881900e31ef5ac755332535cab82d69
 
           git -C bootable/recovery diff --cached --stat \
             | tee "$GITHUB_WORKSPACE/recovery-v41-diffstat.txt"
