@@ -12,6 +12,17 @@ on:
       - "BoardConfig.mk"
       - "device.mk"
       - "twrp_guacamole.mk"
+  pull_request:
+    branches:
+      - codex/guacamole-twrp12-v3-artifact-fix
+    paths:
+      - ".github/workflows/guacamole-h40-v4-compile.yml"
+      - "ci/twrp-oplus-h40-decrypt.patch"
+      - "ci/apply-h40-v4-hybrid.py"
+      - "ci/verify-h40-adapter-elf.sh"
+      - "BoardConfig.mk"
+      - "device.mk"
+      - "twrp_guacamole.mk"
   workflow_dispatch:
 
 permissions:
