@@ -214,6 +214,15 @@ CPP.write_text(cpp)
 HPP.write_text(hpp)
 PM.write_text(pm)
 
+# Chain the V4-specific fail-closed hardening after the structural hybrid
+# transform.  Keeping this as a second exact-match transform makes both safety
+# boundaries independently reviewable and causes CI to fail if the V3/V4
+# surrounding source drifts.
+safety = Path(__file__).with_name('apply-h40-v4-failclosed.py')
+if not safety.is_file():
+    raise SystemExit(f'missing V4 fail-closed transform: {safety}')
+exec(compile(safety.read_text(), str(safety), 'exec'), {'__name__': '__main__'})
+
 print('Applied H.40 V4 hybrid source transform')
 print('  metadata mapper: TeamWin android_system_vold')
 print('  DE/password/CE:  Oplus H.40 libdecrypt_recovery')
