@@ -267,6 +267,44 @@ jobs:
           bash "$RUNNER_TEMP/twrp/$DEVICE_PATH/ci/verify-h40-adapter-elf.sh" \
             "$binary" "$GITHUB_WORKSPACE"
 
+
+      - name: Package v3 recovery artifact
+        if: steps.build.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          binary="$RUNNER_TEMP/twrp/$RECOVERY_BINARY_REL"
+
+          test -f "$binary"
+
+          strings "$binary" | grep -q "Oplus H.40"
+          strings "$binary" | grep -q "FS_IOC_GET_ENCRYPTION_KEY_STATUS"
+
+          mkdir -p "$GITHUB_WORKSPACE/h40-v3-recovery"
+
+          cp "$binary" \
+            "$GITHUB_WORKSPACE/h40-v3-recovery/recovery"
+
+          cp "$GITHUB_WORKSPACE/build-provenance.txt" \
+            "$GITHUB_WORKSPACE/h40-v3-recovery/"
+
+          cp "$GITHUB_WORKSPACE/adapter-verification.txt" \
+            "$GITHUB_WORKSPACE/h40-v3-recovery/"
+
+          cp "$GITHUB_WORKSPACE/recovery-elf.sha256" \
+            "$GITHUB_WORKSPACE/h40-v3-recovery/" || true
+
+      - name: Upload v3 recovery artifact
+        if: steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: guacamole-h40-adapter-v3-recovery
+          path: |
+            h40-v3-recovery/**
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Upload provenance and diagnostics only
         if: always()
         uses: actions/upload-artifact@v4
