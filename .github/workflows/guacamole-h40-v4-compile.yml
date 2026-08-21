@@ -3,7 +3,7 @@ name: Guacamole H.40 V4 hybrid compile/link gate
 on:
   push:
     branches:
-      - codex/guacamole-twrp12-v4-hybrid
+      - codex/guacamole-twrp12-v4-clean
     paths:
       - ".github/workflows/guacamole-h40-v4-compile.yml"
       - "ci/twrp-oplus-h40-decrypt.patch"
