@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - codex/guacamole-twrp12-latest
+      - codex/guacamole-twrp12-v3-artifact-fix
     paths:
       - ".github/workflows/guacamole-h40-adapter-compile.yml"
       - "ci/twrp-oplus-h40-decrypt.patch"
@@ -278,8 +279,9 @@ jobs:
 
           test -f "$binary"
 
-          strings "$binary" | grep -q "Oplus H.40"
-          strings "$binary" | grep -q "FS_IOC_GET_ENCRYPTION_KEY_STATUS"
+          strings -a "$binary" > "$GITHUB_WORKSPACE/h40-v3-recovery.strings"
+          grep -Fq -- "Oplus H.40" "$GITHUB_WORKSPACE/h40-v3-recovery.strings"
+          grep -Fq -- "FS_IOC_GET_ENCRYPTION_KEY_STATUS" "$GITHUB_WORKSPACE/h40-v3-recovery.strings"
 
           mkdir -p "$GITHUB_WORKSPACE/h40-v3-recovery"
 
