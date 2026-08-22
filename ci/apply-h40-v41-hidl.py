@@ -44,6 +44,32 @@ subprocess.run(
     check=True,
 )
 
+# libvold is a static archive in the TWRP recovery executable.  Its Soong
+# shared_libs are not propagated through the Make-built final recovery link, so
+# the direct-HIDL backend's runtime libraries must also be declared explicitly
+# on recovery itself.  Pin the exact post-V3 Android.mk before changing it.
+mk_path = recovery_root / "Android.mk"
+require_blob(
+    mk_path,
+    "db2f73f8f425e3b096434eb4f9ca76f9aad19ef1",
+    "V3 recovery Android.mk",
+)
+mk = mk_path.read_text()
+old_link = '''    ifeq ($(TW_INCLUDE_OPLUS_H40_DECRYPT),true)
+        LOCAL_SRC_FILES += oplus_h40_decrypt.cpp
+        LOCAL_CFLAGS += -DTW_INCLUDE_OPLUS_H40_DECRYPT
+        LOCAL_SHARED_LIBRARIES += libdl
+    endif
+'''
+new_link = '''    ifeq ($(TW_INCLUDE_OPLUS_H40_DECRYPT),true)
+        LOCAL_SRC_FILES += oplus_h40_decrypt.cpp
+        LOCAL_CFLAGS += -DTW_INCLUDE_OPLUS_H40_DECRYPT
+        LOCAL_SHARED_LIBRARIES += libdl android.hardware.keymaster@4.0 libkeymaster4support
+    endif
+'''
+mk = replace_once(mk, old_link, new_link, "V4.1 recovery direct-HIDL link dependencies")
+mk_path.write_text(mk)
+
 # V4.0 proved that the Android-12 Keystore2 AIDL client crashes on this H.40
 # environment at Keymaster construction, even after keystore2 is registered.
 # V4.1 therefore keeps the same four-file TeamWin KeyStorage reader but talks
@@ -128,9 +154,16 @@ if "Oplus H.40 v4.1 metadata backend: direct HIDL Keymaster 4.0" not in cpp:
     raise SystemExit("V4.1 runtime marker missing")
 if "keystore2-v4" in cpp or "TWRP keystore2 runtime unavailable" in cpp:
     raise SystemExit("V4.0 Keystore2 runtime dependency survived V4.1")
+expected_link = (
+    "LOCAL_SHARED_LIBRARIES += libdl android.hardware.keymaster@4.0 "
+    "libkeymaster4support"
+)
+if expected_link not in mk:
+    raise SystemExit("recovery direct-HIDL shared-library link contract missing")
 
 print("Applied H.40 V4.1 direct-HIDL metadata backend")
 print("  metadata format: TeamWin four-file KeyStorage")
 print("  metadata keymaster: android.hardware.keymaster@4.0::IKeymasterDevice/default")
+print("  recovery link: android.hardware.keymaster@4.0 + libkeymaster4support")
 print("  DE/password/CE: Oplus H.40 libdecrypt_recovery")
 print("  Keystore2 runtime: not required")
