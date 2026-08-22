@@ -172,6 +172,8 @@ jobs:
           grep -Fq 'Oplus H.40 v4.1 metadata backend: direct HIDL Keymaster 4.0' \
             bootable/recovery/oplus_h40_decrypt.cpp
           grep -Fq 'IKeymasterDevice40::getService("default")' system/vold/Keymaster.cpp
+          grep -Fq 'LOCAL_SHARED_LIBRARIES += libdl android.hardware.keymaster@4.0 libkeymaster4support' \
+            bootable/recovery/Android.mk
           if grep -Fq 'AServiceManager_waitForService' system/vold/Keymaster.cpp; then
             echo 'V4.1 metadata Keymaster still contains Keystore2 AIDL wait path' >&2
             exit 1
@@ -208,15 +210,20 @@ jobs:
             echo "vold_v41_tree=$(git -C system/vold write-tree)"
             echo "metadata_format=TeamWin_four_file_KeyStorage"
             echo "metadata_keymaster=H40_Keymaster_4_0_HIDL_default"
+            echo "recovery_link=direct_Keymaster_4_0_HIDL_shared_libs"
             echo "de_ce_backend=Oplus_H40_libdecrypt_recovery"
             echo "keystore2_runtime=not_required"
             echo "hidl_reference_location=outside_soong_tree"
           } | tee "$GITHUB_WORKSPACE/build-provenance.txt"
 
-          # These must remain identical to the source trees from failed run
-          # 32529573084; this retry changes only reference checkout placement.
-          test "$(git -C bootable/recovery write-tree)" = be1c8eeb357b7115992bac45388ef870a6761873
+          # The link-interface fix intentionally changes recovery/Android.mk.
+          # The transplanted vold source tree must remain byte-for-byte identical
+          # to run 32531431226; only the final recovery link contract is changing.
           test "$(git -C system/vold write-tree)" = 7e15845f3881900e31ef5ac755332535cab82d69
+          git -C bootable/recovery diff --cached -- Android.mk \
+            > "$GITHUB_WORKSPACE/recovery-v41-link.patch"
+          grep -Fq '+        LOCAL_SHARED_LIBRARIES += libdl android.hardware.keymaster@4.0 libkeymaster4support' \
+            "$GITHUB_WORKSPACE/recovery-v41-link.patch"
 
           git -C bootable/recovery diff --cached --stat \
             | tee "$GITHUB_WORKSPACE/recovery-v41-diffstat.txt"
@@ -336,6 +343,7 @@ jobs:
           path: |
             build-provenance.txt
             recovery-v41-diffstat.txt
+            recovery-v41-link.patch
             vold-v41-diffstat.txt
             vold-v41.patch
             build.log
