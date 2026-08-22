@@ -1,0 +1,108 @@
+name: Guacamole H.40 V4.1 run locator
+
+on:
+  push:
+    branches:
+      - codex/guacamole-twrp12-v41-hidl-clean
+
+permissions:
+  contents: read
+  actions: read
+  statuses: write
+
+jobs:
+  locate-main-gate:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: Locate and publish main V4.1 gate run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_WORKFLOW: guacamole-h40-v41-hidl-compile.yml
+          TARGET_BRANCH: codex/guacamole-twrp12-v41-hidl-clean
+          PREVIOUS_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/${TARGET_WORKFLOW}/runs?branch=${TARGET_BRANCH}&event=push&per_page=20"
+          current="${GITHUB_SHA}"
+          previous="${PREVIOUS_SHA}"
+
+          for attempt in $(seq 1 24); do
+            curl --fail --silent --show-error --location \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$api" > "$RUNNER_TEMP/v41-runs.json"
+
+            read -r run_id head_sha run_status conclusion < <(
+              python3 - "$RUNNER_TEMP/v41-runs.json" "$current" "$previous" <<'PY'
+import json
+import sys
+
+path, current, previous = sys.argv[1:]
+with open(path, encoding="utf-8") as fh:
+    runs = json.load(fh).get("workflow_runs", [])
+
+# A normal source/workflow push triggers the main gate at the current SHA.
+# The first locator-only commit intentionally does not, so fall back to the
+# immediately preceding branch head to discover the already-running gate.
+for wanted in (current, previous):
+    for run in runs:
+        if run.get("head_sha") == wanted:
+            conclusion = run.get("conclusion") or "pending"
+            print(run["id"], run["head_sha"], run["status"], conclusion)
+            raise SystemExit(0)
+raise SystemExit(1)
+PY
+            ) || true
+
+            if [[ -n "${run_id:-}" ]]; then
+              target="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${run_id}"
+              description="main ${head_sha:0:12}: ${run_status}/${conclusion}"
+              payload="$(python3 - "$target" "$description" <<'PY'
+import json
+import sys
+print(json.dumps({
+    "state": "pending",
+    "target_url": sys.argv[1],
+    "description": sys.argv[2][:140],
+    "context": "H40 V4.1 main gate locator",
+}))
+PY
+              )"
+              curl --fail --silent --show-error --location \
+                -X POST \
+                -H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+                -d "$payload" > /dev/null
+              echo "main_run_id=${run_id}"
+              echo "main_head_sha=${head_sha}"
+              echo "main_status=${run_status}"
+              echo "main_conclusion=${conclusion}"
+              exit 0
+            fi
+            sleep 5
+          done
+
+          description="No V4.1 main gate run found for current/previous SHA"
+          payload="$(python3 - "$description" <<'PY'
+import json
+import sys
+print(json.dumps({
+    "state": "error",
+    "description": sys.argv[1][:140],
+    "context": "H40 V4.1 main gate locator",
+}))
+PY
+          )"
+          curl --fail --silent --show-error --location \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            -d "$payload" > /dev/null || true
+          exit 1
