@@ -1,9 +1,9 @@
-name: Guacamole H.40 V4.1 Keymaster compatibility gate
+name: Guacamole H.40 V4.2 Keymaster blob probe gate
 
 on:
   push:
     branches:
-      - codex/guacamole-twrp12-v41-kmcompat
+      - codex/guacamole-twrp12-v42-blobprobe
     paths:
       - ".github/workflows/guacamole-h40-v41-kmcompat-compile.yml"
       - "ci/twrp-oplus-h40-decrypt.patch"
@@ -11,6 +11,7 @@ on:
       - "ci/apply-h40-v4-failclosed.py"
       - "ci/apply-h40-v41-hidl.py"
       - "ci/apply-h40-v41-kmcompat.py"
+      - "ci/apply-h40-v42-blobprobe.py"
       - "ci/verify-h40-adapter-elf.sh"
       - "BoardConfig.mk"
       - "device.mk"
@@ -21,7 +22,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: guacamole-h40-v41-kmcompat-${{ github.ref }}
+  group: guacamole-h40-v42-blobprobe-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -84,7 +85,7 @@ jobs:
             --manifest-url "$MANIFEST_URL" \
             --manifest-branch "$MANIFEST_BRANCH"
           mkdir -p .repo/local_manifests
-          cat > .repo/local_manifests/oneplus-v41-kmcompat.xml <<EOF
+          cat > .repo/local_manifests/oneplus-v42-blobprobe.xml <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
           <manifest>
             <extend-project name="android_bootable_recovery"
@@ -131,23 +132,25 @@ jobs:
           git -C "$ref" checkout --detach FETCH_HEAD
           test "$(git -C "$ref" rev-parse HEAD)" = "$HIDL_REFERENCE_REVISION"
 
-      - name: Apply V3, hybrid, V4.1 and H40 Keymaster fix
+      - name: Apply V3, V4.1 compatibility and V4.2 blob probe
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/twrp"
           v3_patch="$PWD/$DEVICE_PATH/ci/twrp-oplus-h40-decrypt.patch"
           base_transform="$PWD/$DEVICE_PATH/ci/apply-h40-v41-hidl.py"
           km_fix="$PWD/$DEVICE_PATH/ci/apply-h40-v41-kmcompat.py"
+          blob_probe="$PWD/$DEVICE_PATH/ci/apply-h40-v42-blobprobe.py"
           hidl_reference="$RUNNER_TEMP/h40-vold-hidl-reference"
 
           printf '%s  %s\n' "$V3_PATCH_SHA256" "$v3_patch" | sha256sum --check -
-          python3 -m py_compile "$base_transform" "$km_fix"
+          python3 -m py_compile "$base_transform" "$km_fix" "$blob_probe"
           git -C bootable/recovery apply --check --index --whitespace=error-all "$v3_patch"
           git -C bootable/recovery apply --index --whitespace=error-all "$v3_patch"
 
           python3 "$base_transform" \
             "$PWD/bootable/recovery" "$PWD/system/vold" "$hidl_reference"
           python3 "$km_fix" "$PWD/bootable/recovery" "$PWD/system/vold"
+          python3 "$blob_probe" "$PWD/bootable/recovery" "$PWD/system/vold"
 
           git -C bootable/recovery add -- \
             Android.mk oplus_h40_decrypt.cpp oplus_h40_decrypt.hpp partitionmanager.cpp
@@ -159,6 +162,10 @@ jobs:
           grep -Fq 'KmDevice::enumerateAvailableDevices()' system/vold/Keymaster.cpp
           grep -Fq 'KmDevice::performHmacKeyAgreement(devices)' system/vold/Keymaster.cpp
           grep -Fq '[H40 KMCOMPAT] constructor: enumerating Keymaster 4.x devices' system/vold/Keymaster.cpp
+          grep -Fq '[H40 BLOBPROBE] begin bridge:' system/vold/Keymaster.cpp
+          grep -Fq '[H40 BLOBPROBE] characteristics:' system/vold/Keymaster.cpp
+          grep -Fq '[H40 BLOBPROBE] auth begin bridge:' system/vold/Keymaster.cpp
+          test "$(grep -Fc 'beginHidlParams.hidl_data()' system/vold/Keymaster.cpp)" = 4
           grep -Fq 'if (!opHandle.getUpgradedBlob()) return opHandle;' system/vold/KeyStorage.cpp
           grep -Fq '[H40 KMCOMPAT] retrieve: constructing Keymaster' system/vold/KeyStorage.cpp
           grep -Fq 'LOCAL_SHARED_LIBRARIES += android.hardware.keymaster@4.1 libkeymaster4_1support' \
@@ -176,7 +183,7 @@ jobs:
             exit 1
           fi
 
-          printf '\n# CI-only: compile/link the H.40 V4.1 Keymaster compatibility adapter.\n' \
+          printf '\n# CI-only: compile/link the H.40 V4.2 Keymaster blob probe.\n' \
             >> "$DEVICE_PATH/BoardConfig.mk"
           printf 'TW_INCLUDE_OPLUS_H40_DECRYPT := true\n' >> "$DEVICE_PATH/BoardConfig.mk"
 
@@ -189,10 +196,13 @@ jobs:
             echo "v3_patch_sha256=$(sha256sum "$v3_patch" | awk '{print $1}')"
             echo "base_transform_sha256=$(sha256sum "$base_transform" | awk '{print $1}')"
             echo "kmcompat_transform_sha256=$(sha256sum "$km_fix" | awk '{print $1}')"
+            echo "blobprobe_transform_sha256=$(sha256sum "$blob_probe" | awk '{print $1}')"
             echo "recovery_tree=$(git -C bootable/recovery write-tree)"
             echo "vold_tree=$(git -C system/vold write-tree)"
             echo "metadata_format=TeamWin_four_file_KeyStorage"
-            echo "metadata_keymaster=Android11_support_wrapper_HIDL_4x"
+            echo "metadata_keymaster=Android11_support_wrapper_HIDL_4x_purpose_filtered"
+            echo "metadata_blob_probe=getKeyCharacteristics_exact_APPLICATION_ID"
+            echo "metadata_blob_probe_mutating=no"
             echo "de_ce_backend=Oplus_H40_libdecrypt_recovery"
             echo "key_upgrade_optional_guard=restored"
           } | tee "$GITHUB_WORKSPACE/build-provenance.txt"
@@ -200,7 +210,7 @@ jobs:
           git -C bootable/recovery diff --cached --stat | tee "$GITHUB_WORKSPACE/recovery-diffstat.txt"
           git -C system/vold diff --cached --stat | tee "$GITHUB_WORKSPACE/vold-diffstat.txt"
           git -C system/vold diff --cached -- Keymaster.cpp Keymaster.h KeyStorage.cpp Android.bp \
-            > "$GITHUB_WORKSPACE/vold-kmcompat.patch"
+            > "$GITHUB_WORKSPACE/vold-v42-blobprobe.patch"
 
       - name: Configure build
         run: |
@@ -242,6 +252,9 @@ jobs:
             "$GITHUB_WORKSPACE/recovery.strings"
           grep -Fq '[H40 KMCOMPAT] retrieve: constructing Keymaster' \
             "$GITHUB_WORKSPACE/recovery.strings"
+          grep -Fq '[H40 BLOBPROBE] begin bridge:' "$GITHUB_WORKSPACE/recovery.strings"
+          grep -Fq '[H40 BLOBPROBE] characteristics:' "$GITHUB_WORKSPACE/recovery.strings"
+          grep -Fq '[H40 BLOBPROBE] auth begin bridge:' "$GITHUB_WORKSPACE/recovery.strings"
           grep -Fq 'Oplus H.40 v4.1 metadata backend: direct HIDL Keymaster 4.0' \
             "$GITHUB_WORKSPACE/recovery.strings"
           grep -Fqx 'android.hardware.keymaster@4.0.so' "$GITHUB_WORKSPACE/recovery.dt-needed"
@@ -256,30 +269,30 @@ jobs:
             echo 'Vivo trustonic runtime string survived' >&2
             exit 1
           fi
-          sha256sum "$binary" | tee "$GITHUB_WORKSPACE/recovery-kmcompat.sha256"
+          sha256sum "$binary" | tee "$GITHUB_WORKSPACE/recovery-v42-blobprobe.sha256"
 
       - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: guacamole-h40-v41-kmcompat-diagnostics
+          name: guacamole-h40-v42-blobprobe-diagnostics
           if-no-files-found: warn
           path: |
             build.log
             build-provenance.txt
             recovery-diffstat.txt
             vold-diffstat.txt
-            vold-kmcompat.patch
+            vold-v42-blobprobe.patch
             recovery.strings
             recovery.dynamic
             recovery.dt-needed
-            recovery-kmcompat.sha256
+            recovery-v42-blobprobe.sha256
             h40-adapter-verification.txt
 
       - name: Upload recovery executable
         if: steps.build.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: guacamole-h40-adapter-v41-kmcompat-recovery
+          name: guacamole-h40-adapter-v42-blobprobe-recovery
           if-no-files-found: error
           path: ${{ runner.temp }}/twrp/out/target/product/guacamole/recovery/root/system/bin/recovery
