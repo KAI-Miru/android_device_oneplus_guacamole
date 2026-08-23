@@ -37,9 +37,15 @@ h = replace_once(
     'using KmDevice = ::android::hardware::keymaster::V4_1::support::Keymaster;\n',
     "Keymaster support-wrapper device type",
 )
-# The Android 12.1 Keymaster V4.1 support wrapper is RefBase-backed and its
-# KeymasterSet stores android::sp<Keymaster>.  Keep the Vivo header's existing
-# android::sp member ownership after changing KmDevice to the support wrapper.
+# The Keymaster V4.1 support wrapper is RefBase-backed and its KeymasterSet
+# stores android::sp<Keymaster>. Keep the Vivo header's existing android::sp
+# member ownership after changing KmDevice to the support wrapper.
+h = replace_once(
+    h,
+    '    void safePerformHmacKeyAgreement();\n',
+    '',
+    "remove obsolete raw-HIDL HMAC helper declaration",
+)
 h_path.write_text(h)
 
 cpp_path = vold_root / "Keymaster.cpp"
@@ -94,11 +100,6 @@ new_ctor_hmac = r'''Keymaster::Keymaster() {
     // Retain the old CI string as a provenance marker only. No raw getService
     // call is made; the support wrapper above owns service discovery.
     LOG(DEBUG) << "[Keymaster] Trying default keymaster 4.0 service...";
-}
-
-void Keymaster::safePerformHmacKeyAgreement() {
-    // Kept only for source/API compatibility with the reviewed V4.1 wrapper.
-    // Standard HMAC agreement is performed once in the constructor above.
 }
 
 '''
@@ -202,5 +203,6 @@ print("  metadata format: TeamWin four-file KeyStorage")
 print("  Keymaster discovery: AOSP V4.1 support wrapper over HIDL 4.x")
 print("  Keymaster ownership: android::sp, matching V4.1 KeymasterSet")
 print("  unsafe Vivo trustonic/raw getService path: removed")
+print("  obsolete raw-HIDL HMAC helper: removed")
 print("  KeyStorage upgraded-blob optional guard: restored")
 print("  DE/password/CE: Oplus H.40 libdecrypt_recovery unchanged")
