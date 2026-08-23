@@ -112,6 +112,85 @@ cpp_path.write_text(cpp)
 # upgrade, dereferencing an empty optional is undefined behaviour.
 ks_path = vold_root / "KeyStorage.cpp"
 ks = ks_path.read_text()
+
+# Physical kmcompat test dc5d6e0 established that the fault happens before
+# Keymaster construction. Disassembly of the exact CI recovery shows
+# generateAppId() loading the namespace-scope storage_binding_info pointer,
+# adding 0x1c (the mutex offset), then locking it. On H.40 that pointer is
+# still null, yielding the observed SEGV_MAPERR at address 0x1c. Preserve
+# TeamWin's binding-seed semantics but make object construction lazy and tied
+# to first use instead of relying on the recovery executable's .init_array.
+ks = replace_once(
+    ks,
+    'StorageBindingInfo& storage_binding_info = *new StorageBindingInfo;\n',
+    '''static StorageBindingInfo& GetStorageBindingInfo() {
+    // Deliberately never freed, matching the original TeamWin lifetime.
+    // Function-local initialization guarantees the object exists before the
+    // first mutex lock even if namespace-scope dynamic initialization is lost.
+    static StorageBindingInfo* info = new StorageBindingInfo;
+    return *info;
+}
+''',
+    "KeyStorage lazy storage-binding state",
+)
+
+app_id_old = '''static std::string generateAppId(const KeyAuthentication& auth,
+                                 const std::string& secdiscardable_hash) {
+    std::string appId = secdiscardable_hash + auth.secret;
+
+    const std::lock_guard<std::mutex> scope_lock(storage_binding_info.guard);
+    switch (storage_binding_info.state) {
+        case StorageBindingInfo::State::UNINITIALIZED:
+            storage_binding_info.state = StorageBindingInfo::State::NOT_USED;
+            break;
+        case StorageBindingInfo::State::IN_USE:
+            appId.append(storage_binding_info.seed.begin(), storage_binding_info.seed.end());
+            break;
+        case StorageBindingInfo::State::NOT_USED:
+            // noop
+            break;
+    }
+    return appId;
+}
+'''
+app_id_new = '''static std::string generateAppId(const KeyAuthentication& auth,
+                                 const std::string& secdiscardable_hash) {
+    std::string appId = secdiscardable_hash + auth.secret;
+
+    LOG(ERROR) << "[H40 KMCOMPAT] appId: acquiring storage-binding state";
+    auto& storage_binding_info = GetStorageBindingInfo();
+    LOG(ERROR) << "[H40 KMCOMPAT] appId: storage-binding state ready, state="
+               << static_cast<int32_t>(storage_binding_info.state);
+    const std::lock_guard<std::mutex> scope_lock(storage_binding_info.guard);
+    switch (storage_binding_info.state) {
+        case StorageBindingInfo::State::UNINITIALIZED:
+            storage_binding_info.state = StorageBindingInfo::State::NOT_USED;
+            break;
+        case StorageBindingInfo::State::IN_USE:
+            appId.append(storage_binding_info.seed.begin(), storage_binding_info.seed.end());
+            break;
+        case StorageBindingInfo::State::NOT_USED:
+            // noop
+            break;
+    }
+    LOG(ERROR) << "[H40 KMCOMPAT] appId: complete";
+    return appId;
+}
+'''
+ks = replace_once(ks, app_id_old, app_id_new, "KeyStorage appId lazy binding access")
+
+ks = replace_once(
+    ks,
+    '''bool setKeyStorageBindingSeed(const std::vector<uint8_t>& seed) {
+    const std::lock_guard<std::mutex> scope_lock(storage_binding_info.guard);
+''',
+    '''bool setKeyStorageBindingSeed(const std::vector<uint8_t>& seed) {
+    auto& storage_binding_info = GetStorageBindingInfo();
+    const std::lock_guard<std::mutex> scope_lock(storage_binding_info.guard);
+''',
+    "KeyStorage binding-seed setter lazy access",
+)
+
 ks = replace_once(
     ks,
     '    // if (!opHandle.getUpgradedBlob()) return opHandle;\n',
@@ -191,6 +270,18 @@ for forbidden in (
     if forbidden in final_h + final_cpp:
         raise SystemExit(f"forbidden V4.1 path survived: {forbidden}")
 
+if 'StorageBindingInfo& storage_binding_info = *new StorageBindingInfo;' in final_ks:
+    raise SystemExit("unsafe namespace-scope storage-binding initializer survived")
+if 'static StorageBindingInfo& GetStorageBindingInfo()' not in final_ks:
+    raise SystemExit("lazy storage-binding accessor missing")
+if 'static StorageBindingInfo* info = new StorageBindingInfo;' not in final_ks:
+    raise SystemExit("lazy storage-binding allocation missing")
+if final_ks.count('auto& storage_binding_info = GetStorageBindingInfo();') != 2:
+    raise SystemExit("unexpected number of lazy storage-binding call sites")
+if '[H40 KMCOMPAT] appId: acquiring storage-binding state' not in final_ks:
+    raise SystemExit("storage-binding runtime diagnostics missing")
+if '[H40 KMCOMPAT] appId: complete' not in final_ks:
+    raise SystemExit("storage-binding completion diagnostic missing")
 if 'if (!opHandle.getUpgradedBlob()) return opHandle;' not in final_ks:
     raise SystemExit("KeyStorage upgraded-blob guard missing")
 if '[H40 KMCOMPAT] retrieve: constructing Keymaster' not in final_ks:
@@ -200,6 +291,7 @@ if 'LOCAL_SHARED_LIBRARIES += android.hardware.keymaster@4.1 libkeymaster4_1supp
 
 print("Applied H.40 V4.1 Keymaster runtime compatibility fix")
 print("  metadata format: TeamWin four-file KeyStorage")
+print("  KeyStorage binding state: lazy first-use initialization")
 print("  Keymaster discovery: AOSP V4.1 support wrapper over HIDL 4.x")
 print("  Keymaster ownership: android::sp, matching V4.1 KeymasterSet")
 print("  unsafe Vivo trustonic/raw getService path: removed")
