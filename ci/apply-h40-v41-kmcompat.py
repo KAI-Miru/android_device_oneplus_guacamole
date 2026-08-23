@@ -19,9 +19,9 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
 # The first V4.1 physical test proved that the Vivo Y73S raw-HIDL wrapper is
 # not runtime-safe on H.40. It crash-loops at metadata-key retrieval with a
 # near-null SIGSEGV even though QSEE and Keymaster 4.0 are registered. Keep
-# TeamWin 12.1 KeyStorage, but use the standard Android 11 Keymaster V4.1
-# support wrapper, which enumerates both 4.0 and 4.1 devices and performs the
-# normal HMAC-sharing agreement used on Qualcomm-era devices.
+# TeamWin 12.1 KeyStorage, but use the standard Keymaster V4.1 support wrapper,
+# which enumerates the available HIDL 4.x devices and performs the normal
+# HMAC-sharing agreement used by AOSP vold on Qualcomm-era devices.
 
 h_path = vold_root / "Keymaster.h"
 h = h_path.read_text()
@@ -37,12 +37,9 @@ h = replace_once(
     'using KmDevice = ::android::hardware::keymaster::V4_1::support::Keymaster;\n',
     "Keymaster support-wrapper device type",
 )
-h = replace_once(
-    h,
-    '    android::sp<KmDevice> mDevice;\n',
-    '    std::unique_ptr<KmDevice> mDevice;\n',
-    "Keymaster support-wrapper ownership",
-)
+# The Android 12.1 Keymaster V4.1 support wrapper is RefBase-backed and its
+# KeymasterSet stores android::sp<Keymaster>.  Keep the Vivo header's existing
+# android::sp member ownership after changing KmDevice to the support wrapper.
 h_path.write_text(h)
 
 cpp_path = vold_root / "Keymaster.cpp"
@@ -78,7 +75,7 @@ new_ctor_hmac = r'''Keymaster::Keymaster() {
 
     for (auto& dev : devices) {
         if (dev->halVersion().securityLevel != km_hidl::SecurityLevel::STRONGBOX) {
-            mDevice = std::move(dev);
+            mDevice = dev;
             break;
         }
     }
@@ -95,7 +92,7 @@ new_ctor_hmac = r'''Keymaster::Keymaster() {
                << ", HAL=" << mDevice->descriptor() << "/" << mDevice->instanceName();
 
     // Retain the old CI string as a provenance marker only. No raw getService
-    // call is made; the Android 11 support wrapper above owns service discovery.
+    // call is made; the support wrapper above owns service discovery.
     LOG(DEBUG) << "[Keymaster] Trying default keymaster 4.0 service...";
 }
 
@@ -154,8 +151,8 @@ begin_new = '''    LOG(ERROR) << "[H40 KMCOMPAT] begin: calling Keymaster begin 
 ks = replace_once(ks, begin_old, begin_new, "metadata begin stage markers")
 ks_path.write_text(ks)
 
-# libvold is static in recovery. The Android 11 support wrapper lives in the
-# V4.1 support library, so make the final Make-built recovery link explicit too.
+# libvold is static in recovery. The V4.1 support wrapper lives in its support
+# library, so make the final Make-built recovery link explicit too.
 mk_path = recovery_root / "Android.mk"
 mk = mk_path.read_text()
 mk = replace_once(
@@ -175,7 +172,7 @@ final_mk = mk_path.read_text()
 
 required = {
     "support wrapper type": "V4_1::support::Keymaster",
-    "support wrapper ownership": "std::unique_ptr<KmDevice> mDevice",
+    "support wrapper ownership": "android::sp<KmDevice> mDevice",
     "device enumeration": "KmDevice::enumerateAvailableDevices()",
     "standard HMAC agreement": "KmDevice::performHmacKeyAgreement(devices)",
     "constructor stage marker": "[H40 KMCOMPAT] constructor: enumerating Keymaster 4.x devices",
@@ -188,7 +185,7 @@ for forbidden in (
     'IKeymasterDevice40::getService("trustonic")',
     'IKeymasterDevice40::getService("default")',
     'safePerformHmacKeyAgreement();',
-    'android::sp<KmDevice> mDevice',
+    'std::unique_ptr<KmDevice> mDevice',
 ):
     if forbidden in final_h + final_cpp:
         raise SystemExit(f"forbidden V4.1 path survived: {forbidden}")
@@ -202,8 +199,8 @@ if 'LOCAL_SHARED_LIBRARIES += android.hardware.keymaster@4.1 libkeymaster4_1supp
 
 print("Applied H.40 V4.1 Keymaster runtime compatibility fix")
 print("  metadata format: TeamWin four-file KeyStorage")
-print("  Keymaster discovery: Android 11 V4.1 support wrapper over HIDL 4.0/4.1")
-print("  Keymaster ownership: std::unique_ptr, matching enumerateAvailableDevices()")
+print("  Keymaster discovery: AOSP V4.1 support wrapper over HIDL 4.x")
+print("  Keymaster ownership: android::sp, matching V4.1 KeymasterSet")
 print("  unsafe Vivo trustonic/raw getService path: removed")
 print("  KeyStorage upgraded-blob optional guard: restored")
 print("  DE/password/CE: Oplus H.40 libdecrypt_recovery unchanged")
