@@ -209,6 +209,24 @@ metadata = replace_once(
 metadata = re.sub(r"\bkDmNameUserdata\b", "GetDmNameUserdata()", metadata)
 metadata_path.write_text(metadata)
 
+# The actual V4.5 recovery ELF contains Utils.cpp.  Its namespace-scope mutex is
+# therefore part of the same recovery constructor boundary even though it is not
+# DE-policy state.  Keep the lock process-lifetime and initialize it at first use.
+utils_path = vold / "Utils.cpp"
+utils = utils_path.read_text()
+utils = replace_once(
+    utils,
+    "static std::mutex kSecurityLock;\n",
+    '''static std::mutex& GetSecurityLock() {
+    static auto* lock = new std::mutex();
+    return *lock;
+}
+''',
+    "Utils recovery security lock",
+)
+utils = re.sub(r"\bkSecurityLock\b", "GetSecurityLock()", utils)
+utils_path.write_text(utils)
+
 vh_path = vold / "VoldUtil.h"
 vh = vh_path.read_text()
 vh = replace_once(
@@ -278,6 +296,10 @@ if "android::fs_mgr::Fstab fstab_default;" in vcpp_path.read_text():
     raise SystemExit("namespace-scope Fstab survived")
 if "static const std::string kDmNameUserdata" in metadata_path.read_text():
     raise SystemExit("namespace-scope MetadataCrypt std::string survived")
+if "static std::mutex kSecurityLock;" in utils_path.read_text():
+    raise SystemExit("namespace-scope Utils security mutex survived")
+if "GetSecurityLock()" not in utils_path.read_text():
+    raise SystemExit("lazy Utils security mutex missing")
 
 leftovers = []
 for path in vold.rglob("*"):
@@ -292,5 +314,6 @@ print("Applied H.40 V4.6 recovery-safe lazy FsCrypt/key globals")
 print("  FsCrypt maps/set/strings: first-use leaked storage")
 print("  KeyStorage empty authentication: first-use")
 print("  MetadataCrypt userdata dm-name: first-use")
+print("  Utils security mutex: first-use")
 print("  vold default Fstab: first-use")
 print("  rewritten Fstab consumers: " + ", ".join(sorted(fstab_users)))
