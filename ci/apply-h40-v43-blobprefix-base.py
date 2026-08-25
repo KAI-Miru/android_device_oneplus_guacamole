@@ -56,25 +56,52 @@ struct Ks2KeyBlobView {
     std::string raw;
     bool prefixPresent;
     bool softKeyMint;
+    bool malformedPrefix;
 };
 
 static Ks2KeyBlobView UnwrapKs2KeyBlob(const std::string& stored) {
-    Ks2KeyBlobView result{stored, false, false};
-    if (stored.size() < kKs2KeyBlobPrefixSize ||
+    Ks2KeyBlobView result{stored, false, false, false};
+    if (stored.size() < sizeof(kKs2KeyBlobMagic) ||
         std::memcmp(stored.data(), kKs2KeyBlobMagic, sizeof(kKs2KeyBlobMagic)) != 0) {
+        return result;  // Genuine legacy/unprefixed blob.
+    }
+
+    result.prefixPresent = true;
+    if (stored.size() < kKs2KeyBlobPrefixSize) {
+        result.raw.clear();
+        result.malformedPrefix = true;
         return result;
     }
 
     const uint8_t origin = static_cast<uint8_t>(stored[kKs2KeyBlobPrefixSize - 1]);
     if (origin != 0 && origin != 1) {
+        result.raw.clear();
+        result.malformedPrefix = true;
         return result;
     }
 
-    result.prefixPresent = true;
     result.softKeyMint = origin == 1;
     result.raw.assign(stored.data() + kKs2KeyBlobPrefixSize,
                       stored.size() - kKs2KeyBlobPrefixSize);
+    if (result.raw.empty()) result.malformedPrefix = true;
     return result;
+}
+
+static bool IsUsableHidlKeyBlob(const Ks2KeyBlobView& view, const char* operation) {
+    if (view.malformedPrefix) {
+        LOG(ERROR) << "[H40 BLOBPREFIX] " << operation << ": malformed pKMblob prefix";
+        return false;
+    }
+    if (view.softKeyMint) {
+        LOG(ERROR) << "[H40 BLOBPREFIX] " << operation
+                   << ": software-KeyMint blob unsupported on QTI HIDL";
+        return false;
+    }
+    if (view.raw.empty()) {
+        LOG(ERROR) << "[H40 BLOBPREFIX] " << operation << ": empty HIDL key blob";
+        return false;
+    }
+    return true;
 }
 
 static std::string WrapKs2HardwareKeyBlob(const std::string& raw) {
@@ -110,10 +137,7 @@ cpp = replace_once(
                << " prefixPresent=" << oldBlobView.prefixPresent
                << " softKeyMint=" << oldBlobView.softKeyMint
                << " hidlLen=" << oldBlobView.raw.size();
-    if (oldBlobView.softKeyMint) {
-        LOG(ERROR) << "[H40 BLOBPREFIX] upgrade: refusing software-KeyMint blob on QTI HIDL";
-        return false;
-    }
+    if (!IsUsableHidlKeyBlob(oldBlobView, "upgrade")) return false;
     auto oldKeyBlob = km_hidl::support::blob2hidlVec(oldBlobView.raw);
     auto hidlParams = convertToHidl(inParams);
 ''',
@@ -150,10 +174,7 @@ cpp = replace_once(
     LOG(INFO) << "[Keymaster] deleteKey";
     if (!mDevice) return false;
     auto blobView = UnwrapKs2KeyBlob(key);
-    if (blobView.softKeyMint) {
-        LOG(ERROR) << "[H40 BLOBPREFIX] delete: refusing software-KeyMint blob on QTI HIDL";
-        return false;
-    }
+    if (!IsUsableHidlKeyBlob(blobView, "delete")) return false;
     auto keyBlob = km_hidl::support::blob2hidlVec(blobView.raw);
     auto error = mDevice->deleteKey(keyBlob);
 ''',
@@ -165,10 +186,7 @@ cpp = replace_once(
     hidl_vec<uint8_t> clientId, appData;  // empty for most keys
 ''',
     '''    auto blobView = UnwrapKs2KeyBlob(key);
-    if (blobView.softKeyMint) {
-        LOG(ERROR) << "[H40 BLOBPREFIX] characteristics: refusing software-KeyMint blob on QTI HIDL";
-        return false;
-    }
+    if (!IsUsableHidlKeyBlob(blobView, "characteristics")) return false;
     auto keyBlob = km_hidl::support::blob2hidlVec(blobView.raw);
     hidl_vec<uint8_t> clientId, appData;  // empty for most keys
 ''',
@@ -186,8 +204,7 @@ first_begin_new = '''    auto blobView = UnwrapKs2KeyBlob(key);
                << " prefixPresent=" << blobView.prefixPresent
                << " softKeyMint=" << blobView.softKeyMint
                << " hidlLen=" << blobView.raw.size();
-    if (blobView.softKeyMint) {
-        LOG(ERROR) << "[H40 BLOBPREFIX] begin: refusing software-KeyMint blob on QTI HIDL";
+    if (!IsUsableHidlKeyBlob(blobView, "begin")) {
         return KeymasterOperation(km::ErrorCode::INVALID_KEY_BLOB);
     }
 
@@ -292,8 +309,7 @@ auth_begin_new = '''    auto blobView = UnwrapKs2KeyBlob(key);
                << " prefixPresent=" << blobView.prefixPresent
                << " softKeyMint=" << blobView.softKeyMint
                << " hidlLen=" << blobView.raw.size();
-    if (blobView.softKeyMint) {
-        LOG(ERROR) << "[H40 BLOBPREFIX] auth begin: refusing software-KeyMint blob on QTI HIDL";
+    if (!IsUsableHidlKeyBlob(blobView, "auth begin")) {
         return KeymasterOperation(km::ErrorCode::INVALID_KEY_BLOB);
     }
 
@@ -336,8 +352,7 @@ cpp = replace_once(
 # representation again for the immediate retry that still calls the legacy HAL.
 upgraded_blob_old = '            auto upgradedKeyBlob = km_hidl::support::blob2hidlVec(upgradedKey);\n'
 upgraded_blob_new = '''            auto upgradedBlobView = UnwrapKs2KeyBlob(upgradedKey);
-            if (upgradedBlobView.softKeyMint) {
-                LOG(ERROR) << "[H40 BLOBPREFIX] retry: upgraded blob unexpectedly software-backed";
+            if (!IsUsableHidlKeyBlob(upgradedBlobView, "retry")) {
                 return KeymasterOperation(km::ErrorCode::INVALID_KEY_BLOB);
             }
             auto upgradedKeyBlob = km_hidl::support::blob2hidlVec(upgradedBlobView.raw);
@@ -360,6 +375,9 @@ required = (
     'kKs2KeyBlobPrefixSize = 8',
     "{'p', 'K', 'M', 'b', 'l', 'o', 'b'}",
     'UnwrapKs2KeyBlob(',
+    'IsUsableHidlKeyBlob(',
+    'malformedPrefix',
+    'malformed pKMblob prefix',
     'WrapKs2HardwareKeyBlob(',
     'mDevice->getKeyCharacteristics(',
     'param.tag == km_hidl::Tag::APPLICATION_ID',
@@ -374,6 +392,15 @@ if final_cpp.count('beginHidlParams.hidl_data()') != 4:
     raise SystemExit("V4.3 expected exactly four filtered HIDL begin call sites")
 if final_cpp.count('auto upgradedBlobView = UnwrapKs2KeyBlob(upgradedKey);') != 2:
     raise SystemExit("V4.3 expected exactly two upgraded-key retry unwraps")
+if final_cpp.count('IsUsableHidlKeyBlob(') != 8:
+    raise SystemExit("V4.3 expected helper plus seven fail-closed HIDL consumers")
+for forbidden_guard in (
+    "if (oldBlobView.softKeyMint)",
+    "if (blobView.softKeyMint)",
+    "if (upgradedBlobView.softKeyMint)",
+):
+    if forbidden_guard in final_cpp:
+        raise SystemExit(f"V4.3 softKeyMint-only guard survived: {forbidden_guard}")
 
 # Do not allow diagnostics to expose APPLICATION_ID or key-blob bytes.
 for forbidden in (
@@ -391,7 +418,7 @@ print("Applied H.40 V4.3 Keystore2 blob-prefix compatibility")
 print("  stored Domain::BLOB prefix: pKMblob + origin byte")
 print("  hardware Keymaster prefix: stripped before legacy HIDL")
 print("  legacy unprefixed blobs: accepted unchanged")
-print("  software-KeyMint-prefixed blobs: fail closed")
+print("  malformed/software-KeyMint-prefixed blobs: fail closed")
 print("  upgraded hardware blobs: re-prefixed before returning to KeyStorage")
 print("  HIDL begin PURPOSE: passed only as dedicated argument")
 print("  metadata blob probe: getKeyCharacteristics with exact APPLICATION_ID")

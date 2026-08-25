@@ -30,19 +30,13 @@ new = r'''bool Keymaster::exportKey(const KeyBuffer& kmKey, std::string* key) {
     LOG(INFO) << "[H40 BLOBPREFIX] export: storedLen=" << storedBlob.size()
               << " prefixPresent=" << blobView.prefixPresent
               << " softKeyMint=" << blobView.softKeyMint
+              << " malformedPrefix=" << blobView.malformedPrefix
               << " hidlLen=" << blobView.raw.size();
 
-    if (blobView.softKeyMint) {
-        LOG(ERROR) << "[H40 BLOBPREFIX] export: software-KeyMint pKMblob is unsupported "
-                      "on the QTI-HIDL recovery path";
-        return false;
-    }
-    if (blobView.raw.empty()) {
-        LOG(ERROR) << "[H40 BLOBPREFIX] export: empty raw HIDL key blob";
-        return false;
-    }
+    if (!IsUsableHidlKeyBlob(blobView, "export")) return false;
 
-    auto keyBlob = blob2hidlVec(reinterpret_cast<const uint8_t*>(blobView.raw.data()),
+    auto keyBlob = km_hidl::support::blob2hidlVec(
+                                reinterpret_cast<const uint8_t*>(blobView.raw.data()),
                                 blobView.raw.size());
     km_hidl::ErrorCode km_error = km_hidl::ErrorCode::UNKNOWN_ERROR;
     std::string exportedKey;
@@ -83,6 +77,9 @@ for required in (
     "[H40 BLOBPREFIX] export:",
     "prefixPresent=",
     "softKeyMint=",
+    "malformedPrefix=",
+    "IsUsableHidlKeyBlob(blobView, \"export\")",
+    "km_hidl::support::blob2hidlVec(",
     "hidlLen=",
     "[H40 BLOBPREFIX] export result:",
     "mDevice->exportKey(km_hidl::KeyFormat::RAW",
@@ -93,12 +90,13 @@ for forbidden in (
     "Using key directly",
     "key->assign(kmKey.begin(), kmKey.end())",
     "kmKey.data()",
+    "auto keyBlob = blob2hidlVec(",
 ):
     if forbidden in body:
         raise SystemExit(f"V4.6 unsafe/direct export path survived: {forbidden}")
 
 print("Applied H.40 V4.6 pKMblob-aware wrapped-storage-key export")
 print("  hardware pKMblob origin: unwrap to raw QTI HIDL blob")
-print("  software KeyMint origin: fail closed")
+print("  malformed/software KeyMint origin: fail closed")
 print("  QTI export failure: fail closed")
 print("  raw key-blob-as-storage-key fallback: removed")

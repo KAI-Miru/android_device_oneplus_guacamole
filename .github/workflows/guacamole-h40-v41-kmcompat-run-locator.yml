@@ -1,48 +1,16 @@
-name: Guacamole H.40 V4.2 blob probe run locator
+name: Retired H.40 run locator
 
 on:
-  push:
-    branches:
-      - codex/guacamole-twrp12-v42-blobprobe
+  workflow_dispatch:
 
 permissions:
-  contents: write
-  actions: read
+  contents: read
 
 jobs:
-  locate:
+  retired:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: codex/guacamole-twrp12-v42-blobprobe
-          fetch-depth: 1
-      - name: Record latest V4.2 compile run
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Explain retirement
         run: |
-          set -euo pipefail
-          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/guacamole-h40-v41-kmcompat-compile.yml/runs?branch=codex%2Fguacamole-twrp12-v42-blobprobe&per_page=5"
-          curl --fail --silent --show-error \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            "$api" > /tmp/runs.json
-          python3 - <<'PY' > ci/v42-blobprobe-run-locator.txt
-          import json
-          data=json.load(open('/tmp/runs.json'))
-          runs=data.get('workflow_runs', [])
-          if not runs:
-              raise SystemExit('no V4.2 blob-probe compile runs found')
-          r=runs[0]
-          for k in ('id','run_number','head_sha','status','conclusion','html_url','created_at','updated_at'):
-              print(f"{k}={r.get(k)}")
-          PY
-          cat ci/v42-blobprobe-run-locator.txt
-          git config user.name "TWRP CI"
-          git config user.email "twrp-ci@users.noreply.github.com"
-          git add ci/v42-blobprobe-run-locator.txt
-          if git diff --cached --quiet; then
-            exit 0
-          fi
-          git commit -m "ci: snapshot V4.2 blob-probe run [skip ci]"
-          git push origin HEAD:codex/guacamole-twrp12-v42-blobprobe
+          echo "This self-mutating V4.2 locator is retired."
+          echo "Use the GitHub Actions run page as the authoritative build status."

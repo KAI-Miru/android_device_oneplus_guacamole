@@ -191,6 +191,28 @@ ks = replace_once(
     "KeyStorage lazy empty-auth object",
 )
 ks = re.sub(r"\bkEmptyAuthentication\b", "GetEmptyAuthentication()", ks)
+ks = replace_once(
+    ks,
+    "static std::mutex key_upgrade_lock;\n",
+    '''static std::mutex& GetKeyUpgradeLock() {
+    static auto* lock = new std::mutex();
+    return *lock;
+}
+''',
+    "KeyStorage lazy upgrade lock",
+)
+ks = replace_once(
+    ks,
+    "static std::vector<std::string> key_dirs_to_commit;\n",
+    '''static std::vector<std::string>& GetKeyDirsToCommit() {
+    static auto* dirs = new std::vector<std::string>();
+    return *dirs;
+}
+''',
+    "KeyStorage lazy deferred-upgrade directories",
+)
+ks = re.sub(r"\bkey_upgrade_lock\b", "GetKeyUpgradeLock()", ks)
+ks = re.sub(r"\bkey_dirs_to_commit\b", "GetKeyDirsToCommit()", ks)
 ks_path.write_text(ks)
 
 metadata_path = vold / "MetadataCrypt.cpp"
@@ -290,8 +312,23 @@ for required in (
     if required not in final_fs:
         raise SystemExit(f"V4.6 lazy FsCrypt contract missing: {required}")
 
-if 'const KeyAuthentication kEmptyAuthentication{""};' in ks_path.read_text():
-    raise SystemExit("namespace-scope KeyAuthentication survived")
+final_ks = ks_path.read_text()
+for forbidden in (
+    'const KeyAuthentication kEmptyAuthentication{""};',
+    "static std::mutex key_upgrade_lock;",
+    "static std::vector<std::string> key_dirs_to_commit;",
+):
+    if forbidden in final_ks:
+        raise SystemExit(f"unsafe KeyStorage namespace object survived: {forbidden}")
+for required in (
+    "static std::mutex& GetKeyUpgradeLock()",
+    "static auto* lock = new std::mutex();",
+    "static std::vector<std::string>& GetKeyDirsToCommit()",
+    "static auto* dirs = new std::vector<std::string>();",
+    "std::lock_guard<std::mutex> lock(GetKeyUpgradeLock())",
+):
+    if required not in final_ks:
+        raise SystemExit(f"lazy KeyStorage contract missing: {required}")
 if "android::fs_mgr::Fstab fstab_default;" in vcpp_path.read_text():
     raise SystemExit("namespace-scope Fstab survived")
 if "static const std::string kDmNameUserdata" in metadata_path.read_text():
@@ -312,7 +349,7 @@ if leftovers:
 
 print("Applied H.40 V4.6 recovery-safe lazy FsCrypt/key globals")
 print("  FsCrypt maps/set/strings: first-use leaked storage")
-print("  KeyStorage empty authentication: first-use")
+print("  KeyStorage empty authentication/upgrade state: first-use")
 print("  MetadataCrypt userdata dm-name: first-use")
 print("  Utils security mutex: first-use")
 print("  vold default Fstab: first-use")

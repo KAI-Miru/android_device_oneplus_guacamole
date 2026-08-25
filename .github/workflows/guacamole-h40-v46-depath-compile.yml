@@ -219,6 +219,8 @@ jobs:
           grep -Fq 'GetDeKeyRawRef()' system/vold/FsCrypt.cpp
           grep -Fq 'GetFstabDefault()' system/vold/VoldUtil.cpp
           grep -Fq 'GetEmptyAuthentication()' system/vold/KeyStorage.cpp
+          grep -Fq 'GetKeyUpgradeLock()' system/vold/KeyStorage.cpp
+          grep -Fq 'GetKeyDirsToCommit()' system/vold/KeyStorage.cpp
           grep -Fq '[H40 FSCRYPTLAZY] DE policies ready:' system/vold/FsCrypt.cpp
           grep -Fq '[H40 FSCRYPTLAZY] DE policy insertion complete:' system/vold/FsCrypt.cpp
           if grep -Fq 'std::map<userid_t, EncryptionPolicy> s_de_policies;' system/vold/FsCrypt.cpp; then
@@ -227,6 +229,15 @@ jobs:
           fi
           if grep -Fq 'std::map<userid_t, EncryptionPolicy> s_ce_policies;' system/vold/FsCrypt.cpp; then
             echo 'namespace-scope CE policy map survived' >&2
+            exit 1
+          fi
+          if grep -Fq 'static std::mutex key_upgrade_lock;' system/vold/KeyStorage.cpp; then
+            echo 'namespace-scope KeyStorage upgrade mutex survived' >&2
+            exit 1
+          fi
+          if grep -Fq 'static std::vector<std::string> key_dirs_to_commit;' \
+              system/vold/KeyStorage.cpp; then
+            echo 'namespace-scope KeyStorage deferred-directory vector survived' >&2
             exit 1
           fi
           if grep -R -n -F 'fstab_default' system/vold \
@@ -239,6 +250,13 @@ jobs:
           grep -Fq '[H40 BLOBPREFIX] export:' system/vold/Keymaster.cpp
           grep -Fq '[H40 BLOBPREFIX] export result:' system/vold/Keymaster.cpp
           grep -Fq 'UnwrapKs2KeyBlob(storedBlob)' system/vold/Keymaster.cpp
+          grep -Fq 'malformed pKMblob prefix' system/vold/Keymaster.cpp
+          grep -Fq 'km_hidl::support::blob2hidlVec(' system/vold/Keymaster.cpp
+          test "$(grep -Fo 'IsUsableHidlKeyBlob(' system/vold/Keymaster.cpp | wc -l)" -eq 9
+          if grep -Fq 'auto keyBlob = blob2hidlVec(' system/vold/Keymaster.cpp; then
+            echo 'unqualified blob2hidlVec survived' >&2
+            exit 1
+          fi
           if grep -Fq 'Using key directly' system/vold/Keymaster.cpp; then
             echo 'unsafe wrapped-key export fallback survived' >&2
             exit 1
@@ -274,6 +292,8 @@ jobs:
             echo "vold_tree=$(git -C system/vold write-tree)"
             echo "metadata_keymaster=V4.5_identity_dynamicized"
             echo "fscrypt_state=lazy_first_use"
+            echo "key_upgrade_state=lazy_first_use"
+            echo "malformed_pKMblob=fail_closed"
             echo "wrapped_export=pKMblob_unwrap_fail_closed"
             echo "persistent_key_blobs_modified=no"
           } | tee "$GITHUB_WORKSPACE/build-provenance.txt"
@@ -331,7 +351,8 @@ jobs:
             '[H40 FSCRYPTLAZY] DE policies ready:' \
             '[H40 FSCRYPTLAZY] DE policy insertion complete:' \
             '[H40 BLOBPREFIX] export:' \
-            '[H40 BLOBPREFIX] export result:'; do
+            '[H40 BLOBPREFIX] export result:' \
+            'malformed pKMblob prefix'; do
             grep -Fq "$marker" "$GITHUB_WORKSPACE/recovery.strings"
           done
 
