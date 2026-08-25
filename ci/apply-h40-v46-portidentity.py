@@ -8,11 +8,13 @@ if len(sys.argv) != 3:
 recovery_cpp_path = Path(sys.argv[1]) / "oplus_h40_decrypt.cpp"
 cpp = recovery_cpp_path.read_text()
 
+
 def replace_once(text: str, old: str, new: str, label: str) -> str:
     count = text.count(old)
     if count != 1:
         raise SystemExit(f"{label}: expected exactly one match, found {count}")
     return text.replace(old, new, 1)
+
 
 cpp = replace_once(
     cpp,
@@ -22,11 +24,28 @@ cpp = replace_once(
     "V4.6 installed-system identity includes",
 )
 
+# Isolate the whole V4.5 function, not the first nested block.  The V4.5 body
+# contains an early multi-line if() whose closing brace is followed by a blank
+# line, so delimiter-based matching is unsafe.  Brace depth is exact for this
+# known function and leaves the surrounding recovery source untouched.
 start = cpp.find('bool PrepareKeymasterBuildIdentity() {')
-end = cpp.find('\n}\n\n', start)
-if start < 0 or end < 0:
-    raise SystemExit("V4.6 unable to isolate V4.5 PrepareKeymasterBuildIdentity")
-end += len('\n}\n\n')
+if start < 0:
+    raise SystemExit("V4.6 unable to find V4.5 PrepareKeymasterBuildIdentity")
+brace = cpp.find('{', start)
+depth = 0
+end = -1
+for pos in range(brace, len(cpp)):
+    if cpp[pos] == '{':
+        depth += 1
+    elif cpp[pos] == '}':
+        depth -= 1
+        if depth == 0:
+            end = pos + 1
+            break
+if end < 0:
+    raise SystemExit("V4.6 unable to isolate complete V4.5 PrepareKeymasterBuildIdentity")
+while end < len(cpp) and cpp[end] == '\n':
+    end += 1
 
 new = r'''bool IsValidAndroidRelease(const std::string& value) {
     if (value.empty() || value.size() > 16) return false;
