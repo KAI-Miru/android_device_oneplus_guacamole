@@ -12,6 +12,7 @@
 #include <sys/syscall.h>
 #include <sys/ucontext.h>
 #include <unistd.h>
+#include <string.h>
 
 #include <array>
 #include <cstdint>
