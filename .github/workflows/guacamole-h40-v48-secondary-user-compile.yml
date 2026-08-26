@@ -21,6 +21,7 @@ on:
       - "ci/apply-h40-v48-secondary-user.py"
       - "ci/apply-h40-v48-depath.py"
       - "ci/verify-h40-adapter-elf.sh"
+      - "recovery/root/twres/**"
       - "BoardConfig.mk"
       - "device.mk"
       - "twrp_guacamole.mk"
@@ -458,6 +459,7 @@ jobs:
           source build/envsetup.sh
           lunch twrp_guacamole-eng
           test "$(get_build_var TW_INCLUDE_OPLUS_H40_DECRYPT)" = true
+          test "$(get_build_var TW_EXTRA_LANGUAGES)" = true
 
       - name: Compile and link recovery
         id: build
@@ -538,6 +540,44 @@ jobs:
           fi
           sha256sum "$binary" | tee "$GITHUB_WORKSPACE/recovery-v48-secondary-user.sha256"
 
+      - name: Verify and package TWRP resources
+        if: steps.build.outcome == 'success'
+        run: |
+          set -euo pipefail
+          recovery_root="$RUNNER_TEMP/twrp/out/target/product/guacamole/recovery/root"
+          twres="$recovery_root/twres"
+          device_twres="$RUNNER_TEMP/twrp/$DEVICE_PATH/recovery/root/twres"
+
+          test -d "$twres/languages"
+          test -d "$twres/fonts"
+          cmp "$device_twres/splash.xml" "$twres/splash.xml"
+          cmp "$device_twres/images/mirumiru.png" "$twres/images/mirumiru.png"
+
+          for language in ja lk zh_CN zh_TW; do
+            test -s "$twres/languages/$language.xml"
+          done
+          for font in DroidSansFallback.ttf NotoSansCJKjp-Regular.ttf Sinhala.ttf; do
+            test -s "$twres/fonts/$font"
+          done
+          grep -Fq '<display>Chinese (Simplified)</display>' "$twres/languages/zh_CN.xml"
+          grep -Fq '<display>Chinese (Traditional)</display>' "$twres/languages/zh_TW.xml"
+
+          language_count="$(find "$twres/languages" -maxdepth 1 -type f -name '*.xml' | wc -l)"
+          test "$language_count" -eq 23
+          (
+            cd "$recovery_root"
+            find twres -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
+          ) | tee "$GITHUB_WORKSPACE/guacamole-h40-v48-twres.sha256"
+          tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+            -czf "$GITHUB_WORKSPACE/guacamole-h40-v48-twres.tar.gz" \
+            -C "$recovery_root" twres
+          tar -tzf "$GITHUB_WORKSPACE/guacamole-h40-v48-twres.tar.gz" \
+            > "$GITHUB_WORKSPACE/guacamole-h40-v48-twres.files"
+          grep -Fxq 'twres/languages/zh_CN.xml' \
+            "$GITHUB_WORKSPACE/guacamole-h40-v48-twres.files"
+          grep -Fxq 'twres/languages/zh_TW.xml' \
+            "$GITHUB_WORKSPACE/guacamole-h40-v48-twres.files"
+
       - name: Upload V4.8 diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -564,3 +604,14 @@ jobs:
           name: guacamole-h40-v48-secondary-user-recovery
           if-no-files-found: error
           path: ${{ runner.temp }}/twrp/out/target/product/guacamole/recovery/root/system/bin/recovery
+
+      - name: Upload V4.8 TWRP resources
+        if: steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: guacamole-h40-v48-twres
+          if-no-files-found: error
+          path: |
+            guacamole-h40-v48-twres.tar.gz
+            guacamole-h40-v48-twres.files
+            guacamole-h40-v48-twres.sha256
