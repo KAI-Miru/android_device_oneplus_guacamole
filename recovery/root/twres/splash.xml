@@ -1,0 +1,78 @@
+<?xml version="1.0"?>
+<recovery>
+    <details>
+        <resolution width="1080" height="1920"/>
+        <author>KAI-Miru and TeamWin</author>
+        <title>TWRP</title>
+        <description>Guacamole ColorOS splash screen</description>
+        <themeversion>6</themeversion>
+    </details>
+
+    <resources>
+        <font name="font_l" filename="RobotoCondensed-Regular.ttf" size="52"/>
+        <font name="font_m" filename="RobotoCondensed-Regular.ttf" size="42"/>
+        <font name="font_s" filename="RobotoCondensed-Regular.ttf" size="34"/>
+        <image name="splashlogo" filename="splashlogo" retainaspect="1"/>
+        <image name="mirumiru" filename="mirumiru" retainaspect="1"/>
+        <image name="splashteamwin" filename="splashteamwin" retainaspect="1"/>
+    </resources>
+
+    <variables>
+        <variable name="screen_width" value="1080"/>
+        <variable name="screen_height" value="1920"/>
+        <variable name="background_color" value="#222222"/>
+        <variable name="header_color" value="#555555"/>
+        <variable name="accent_color" value="#0090CA"/>
+        <variable name="primary_text_color" value="#FFFFFF"/>
+        <variable name="secondary_text_color" value="#AEB4B8"/>
+    </variables>
+
+    <pages>
+        <page name="splash">
+            <background color="%background_color%"/>
+
+            <fill color="%header_color%">
+                <placement x="0" y="0" w="%screen_width%" h="456"/>
+            </fill>
+
+            <image>
+                <image resource="splashlogo"/>
+                <placement x="540" y="456" placement="4"/>
+            </image>
+
+            <image>
+                <image resource="mirumiru"/>
+                <placement x="540" y="990" placement="4"/>
+            </image>
+
+            <image>
+                <image resource="splashteamwin"/>
+                <placement x="540" y="1400" placement="4"/>
+            </image>
+
+            <text color="%accent_color%">
+                <font resource="font_l"/>
+                <placement x="540" y="1480" placement="5"/>
+                <text>TWRP %tw_version%</text>
+            </text>
+
+            <text color="%secondary_text_color%">
+                <font resource="font_s"/>
+                <placement x="540" y="1550" placement="5"/>
+                <text>Latest upstream 12.1 snapshot - 2025-09-02</text>
+            </text>
+
+            <text color="%accent_color%">
+                <font resource="font_m"/>
+                <placement x="540" y="1630" placement="5"/>
+                <text>Unofficial ColorOS Edition</text>
+            </text>
+
+            <text color="%primary_text_color%">
+                <font resource="font_m"/>
+                <placement x="540" y="1700" placement="5"/>
+                <text>OnePlus 7 Series - Guacamole Family</text>
+            </text>
+        </page>
+    </pages>
+</recovery>
