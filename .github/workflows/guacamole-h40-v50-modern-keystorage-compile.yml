@@ -484,7 +484,8 @@ jobs:
           grep -Fq '[H40 V51 PARENT] deriving and installing the accepted user 0 credential in the recovery parent' "$manager"
           grep -Fq 'CompleteModernHandoff(modern_decrypt)' "$manager"
           grep -Fq 'android::keystore::Decrypt_User_H40_Modern(user_id, Password)' "$manager"
-          if grep -Fq 'RunModernDecryptIsolated' "$manager" || grep -Fq 'fork()' "$manager"; then
+          if grep -Fq 'RunModernDecryptIsolated' "$manager" || \
+              grep -Fq 'ModernDecryptResult' "$manager"; then
             echo 'obsolete forked V5.0 modern-decrypt worker survived' >&2
             exit 1
           fi
@@ -801,7 +802,7 @@ jobs:
             "$GITHUB_WORKSPACE/guacamole-h40-v51-runtime-payload.files"
 
       - name: Upload successfully packaged V5.1 runtime
-        if: ${{ always() && steps.runtime_package.outcome == 'success' }}
+        if: ${{ always() && steps.build.outcome == 'success' && hashFiles('guacamole-h40-v51-runtime-payload.tar.gz') != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: guacamole-h40-v51-parent-keystorage-runtime
@@ -882,8 +883,11 @@ jobs:
             fi
           done
 
-          grep -Fq 'H40_RECOVERY_KEYSTORE2_PERMISSION_SHIM_V51' \
-            "$GITHUB_WORKSPACE/keystore2.strings"
+          if ! grep -Fq 'H40_RECOVERY_KEYSTORE2_PERMISSION_SHIM_V51' \
+              "$GITHUB_WORKSPACE/keystore2.strings"; then
+            echo 'missing recovery-only Keystore2 permission shim in final daemon' >&2
+            exit 1
+          fi
           test "$(awk '$1 == "Type:" { print $2 }' "$GITHUB_WORKSPACE/keystore2.header")" = DYN
           test "$(awk '$1 == "Class:" { print $2 }' "$GITHUB_WORKSPACE/keystore2.header")" = ELF64
           test "$(awk '$1 == "Machine:" { print $2 }' "$GITHUB_WORKSPACE/keystore2.header")" = AArch64
