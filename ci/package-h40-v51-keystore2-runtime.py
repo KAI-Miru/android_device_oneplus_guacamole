@@ -4,6 +4,8 @@
 The input is a built recovery root.  The output is deliberately split into:
 
 * ``install-root``: files that may be overlaid into the hybrid ramdisk; and
+* ``context-shim``: exact stock-type fragments that must be merged, never used
+  as whole-file replacements; and
 * ``reference-contexts``: source-policy evidence which MUST NOT be installed.
 
 Only the keystore2 entry point has its PT_INTERP payload changed.  Its matching
