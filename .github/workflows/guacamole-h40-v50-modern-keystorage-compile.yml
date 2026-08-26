@@ -737,9 +737,54 @@ jobs:
           lunch twrp_guacamole-eng
           mka recovery -j"$BUILD_JOBS" 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
 
+      # These steps deliberately precede every packaging and validation gate.
+      # Once compilation succeeds, later failures must never strand the three
+      # binaries needed to diagnose or perform a manual hybrid-ramdisk repack.
+      - name: Stage compiled V5.1 binaries failsafe
+        id: compiled_failsafe
+        if: ${{ always() && steps.build.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          source_dir="$RUNNER_TEMP/twrp/out/target/product/guacamole/recovery/root/system/bin"
+          destination="$RUNNER_TEMP/guacamole-h40-v51-compiled-binaries-failsafe"
+          test ! -e "$destination"
+          mkdir -p "$destination"
+          for name in recovery oplus_h40_credential_helper keystore2; do
+            test -x "$source_dir/$name"
+            install -m 0755 "$source_dir/$name" "$destination/$name"
+          done
+          (
+            cd "$destination"
+            sha256sum keystore2 oplus_h40_credential_helper recovery > SHA256SUMS
+          )
+
+      - name: Upload compiled V5.1 binaries failsafe
+        if: ${{ always() && steps.compiled_failsafe.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: guacamole-h40-v51-compiled-binaries-failsafe
+          if-no-files-found: error
+          path: ${{ runner.temp }}/guacamole-h40-v51-compiled-binaries-failsafe/
+
+      - name: Build matching recovery linker for private runtime
+        id: runtime_linker
+        if: ${{ always() && steps.build.outcome == 'success' }}
+        run: |
+          set -eo pipefail
+          cd "$RUNNER_TEMP/twrp"
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export BUILD_USERNAME=KAI-Miru
+          export BUILD_HOSTNAME=github-actions
+          source build/envsetup.sh
+          lunch twrp_guacamole-eng
+          mka linker.recovery -j"$BUILD_JOBS" 2>&1 \
+            | tee "$GITHUB_WORKSPACE/linker-recovery-build.log"
+          test -x \
+            "$RUNNER_TEMP/twrp/out/target/product/guacamole/recovery/root/system/bin/linker64"
+
       - name: Package V5.1 runtime and private keystore2 closure
         id: runtime_package
-        if: ${{ always() && steps.build.outcome == 'success' }}
+        if: ${{ always() && steps.build.outcome == 'success' && steps.runtime_linker.outcome == 'success' }}
         run: |
           set -euo pipefail
           recovery_root="$RUNNER_TEMP/twrp/out/target/product/guacamole/recovery/root"
@@ -749,6 +794,7 @@ jobs:
           test -x "$binary"
           test -x "$helper"
           test -x "$recovery_root/system/bin/keystore2"
+          test -x "$recovery_root/system/bin/linker64"
 
           payload="$GITHUB_WORKSPACE/guacamole-h40-v51-runtime-payload"
           mkdir -p "$payload"
@@ -1090,6 +1136,7 @@ jobs:
             keystore2-v51.sha256
             guacamole-h40-v51-runtime-payload.files
             h40-adapter-verification.txt
+            linker-recovery-build.log
 
       - name: Upload V5.1 TWRP resources
         if: ${{ always() && steps.build.outcome == 'success' && steps.twres_gate.outcome == 'success' }}
