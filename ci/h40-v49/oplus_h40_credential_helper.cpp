@@ -24,6 +24,14 @@ namespace {
 
 namespace protocol = twrp::oplus_h40::credential_protocol;
 
+void SecureWipe(void* data, std::size_t size) {
+    volatile std::uint8_t* bytes = static_cast<volatile std::uint8_t*>(data);
+    while (size != 0) {
+        *bytes++ = 0;
+        --size;
+    }
+}
+
 constexpr char kVerifySymbol[] =
         "_Z21OplusCredentialVerifyNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEEi";
 constexpr char kSetupDeCeSymbol[] = "_Z11setup_de_cei";
@@ -195,17 +203,17 @@ bool ReadCredential(std::uint64_t attempt_id, std::string* credential) {
         frame.credential_size == 0 ||
         frame.credential_size > protocol::kMaxCredentialBytes ||
         packet_size != sizeof(frame) + frame.credential_size) {
-        explicit_bzero(packet.data(), packet.size());
+        SecureWipe(packet.data(), packet.size());
         return false;
     }
 
     const char* bytes = reinterpret_cast<const char*>(packet.data() + sizeof(frame));
     if (memchr(bytes, '\0', frame.credential_size) != nullptr) {
-        explicit_bzero(packet.data(), packet.size());
+        SecureWipe(packet.data(), packet.size());
         return false;
     }
     credential->assign(bytes, frame.credential_size);
-    explicit_bzero(packet.data(), packet.size());
+    SecureWipe(packet.data(), packet.size());
     return true;
 }
 
@@ -297,7 +305,7 @@ int main() {
     }
     if (!SendReply(protocol::FrameType::kVerifyStarted, 0,
                    protocol::Stage::kVerifyStarted)) {
-        explicit_bzero(&credential[0], credential.size());
+        SecureWipe(&credential[0], credential.size());
         _exit(3);
     }
     StoreStage(protocol::Stage::kVerifyStarted);

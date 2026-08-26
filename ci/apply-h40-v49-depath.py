@@ -54,7 +54,7 @@ for required in (
     "POSIX_SPAWN_SETSIGMASK",
     "SaveHelperMaps",
     "SaveCrashReport",
-    "explicit_bzero(credential_packet.data()",
+    "SecureWipe(credential_packet.data()",
     "close(spawned_socket.release())",
     "KillAndReap",
 ):
@@ -63,6 +63,8 @@ for required in (
 for forbidden in ("system(", "fork(", "popen(", "LD_LIBRARY_PATH", "credential.c_str()"):
     if forbidden in client:
         raise SystemExit(f"V4.9 unsafe client mechanism present: {forbidden}")
+if "explicit_bzero(" in client or "explicit_bzero(" in helper:
+    raise SystemExit("V4.9 Android 12L-incompatible explicit_bzero survived")
 
 for required in (
     'kOemLibraryPath[] = "/system/lib64/libdecrypt_recovery.so"',
@@ -78,6 +80,7 @@ for required in (
     "context->uc_mcontext.regs[index]",
     "context->uc_mcontext.pc",
     "write(protocol::kProtocolFd, &crash, sizeof(crash))",
+    "SecureWipe(packet.data(), packet.size())",
 ):
     if required not in helper and required not in protocol:
         raise SystemExit(f"V4.9 helper contract missing: {required}")

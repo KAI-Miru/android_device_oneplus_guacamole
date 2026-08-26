@@ -35,6 +35,14 @@ constexpr int kSetupTimeoutMs = 30000;
 constexpr int kVerifyTimeoutMs = 60000;
 constexpr int kExitTimeoutMs = 5000;
 
+void SecureWipe(void* data, std::size_t size) {
+    volatile std::uint8_t* bytes = static_cast<volatile std::uint8_t*>(data);
+    while (size != 0) {
+        *bytes++ = 0;
+        --size;
+    }
+}
+
 class ScopedFd {
   public:
     explicit ScopedFd(int fd = -1) : fd_(fd) {}
@@ -428,7 +436,7 @@ IsolatedVerifyResult VerifyCredentialIsolated(const std::string& credential,
            credential.size());
     const bool credential_sent = SendPacket(parent_socket.get(), credential_packet.data(),
                                              credential_packet.size());
-    explicit_bzero(credential_packet.data(), credential_packet.size());
+    SecureWipe(credential_packet.data(), credential_packet.size());
     if (!credential_sent) {
         LOGERR("[H40 V49 HELPER] failed to send credential attempt=%llu: %s\n",
                static_cast<unsigned long long>(attempt_id), strerror(errno));
