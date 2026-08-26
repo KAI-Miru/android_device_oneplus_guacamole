@@ -1,0 +1,566 @@
+name: Guacamole H.40 V4.8 secondary-user gate
+
+on:
+  push:
+    branches:
+      - codex/guacamole-twrp12-v42-blobprobe
+    paths:
+      - ".github/workflows/guacamole-h40-v48-secondary-user-compile.yml"
+      - "ci/twrp-oplus-h40-decrypt.patch"
+      - "ci/apply-h40-v41-hidl.py"
+      - "ci/apply-h40-v41-kmcompat.py"
+      - "ci/apply-h40-v42-blobprobe.py"
+      - "ci/apply-h40-v43-blobprefix-base.py"
+      - "ci/apply-h40-v44-upgradeparams-base.py"
+      - "ci/apply-h40-v46-portidentity.py"
+      - "ci/apply-h40-v46-fscrypt-lazy.py"
+      - "ci/apply-h40-v46-export-prefix.py"
+      - "ci/apply-h40-v46-depath.py"
+      - "ci/apply-h40-v47-fscrypt-keyring.py"
+      - "ci/apply-h40-v47-depath.py"
+      - "ci/apply-h40-v48-secondary-user.py"
+      - "ci/apply-h40-v48-depath.py"
+      - "ci/verify-h40-adapter-elf.sh"
+      - "BoardConfig.mk"
+      - "device.mk"
+      - "twrp_guacamole.mk"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: guacamole-h40-v48-secondary-user-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compile-link-gate:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 240
+
+    env:
+      MANIFEST_URL: https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git
+      MANIFEST_BRANCH: twrp-12.1
+      DEVICE_PATH: device/oneplus/guacamole
+      COMMON_PATH: device/oneplus/sm8150-common
+      ONEPLUS_COMMON_PATH: device/oneplus/common
+      KERNEL_PATH: kernel/oneplus/sm8150
+      RECOVERY_REVISION: 5c3d206a5eeb3d446bcda8248a405a4b278bab5c
+      VOLD_REVISION: a164ba05c5fef288059774a776b2e6e1119957cf
+      V47_VOLD_TREE: a7ae1303e2a96019b529cb091517135c2e93ed49
+      HIDL_REFERENCE_REVISION: f0f84e9646c303db32dc38e5c8faaa93cecf4736
+      V3_PATCH_SHA256: 81046f75eea3b1445f8e994cd9b6b62a48de8799bc4777dd2a2c3ec70e391020
+      IMMUTABLE_DEFAULT_SHA: abef9b8a105c9feee847a6b4ed0903bda8ffb5f9
+      BUILD_JOBS: "4"
+      LC_ALL: C
+      TZ: UTC
+
+    steps:
+      - name: Free runner disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: false
+
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            bc binutils bison build-essential ccache curl flex g++-multilib \
+            gcc-multilib git git-lfs gnupg gperf imagemagick \
+            lib32ncurses5-dev lib32readline-dev lib32z1-dev libelf-dev \
+            liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev \
+            libxml2 libxml2-utils lzop pngcrush python3 rsync schedtool \
+            squashfs-tools xsltproc zip zlib1g-dev
+          mkdir -p "$HOME/bin"
+          curl --fail --location --retry 3 \
+            https://storage.googleapis.com/git-repo-downloads/repo \
+            --output "$HOME/bin/repo"
+          chmod 0755 "$HOME/bin/repo"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+          git config --global user.name "TWRP CI"
+          git config --global user.email "twrp-ci@users.noreply.github.com"
+
+      - name: Verify immutable default branch
+        run: |
+          set -euo pipefail
+          actual=$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" \
+            refs/heads/android-12.1 | awk '{print $1}')
+          test "$actual" = "$IMMUTABLE_DEFAULT_SHA"
+          echo "android-12.1=$actual"
+
+      - name: Sync pinned TWRP
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/twrp"
+          cd "$RUNNER_TEMP/twrp"
+          "$HOME/bin/repo" init --depth=1 \
+            --manifest-url "$MANIFEST_URL" \
+            --manifest-branch "$MANIFEST_BRANCH"
+          mkdir -p .repo/local_manifests
+          cat > .repo/local_manifests/oneplus-v48-secondary-user.xml <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <manifest>
+            <extend-project name="android_bootable_recovery"
+                            path="bootable/recovery"
+                            revision="$RECOVERY_REVISION" />
+            <extend-project name="android_system_vold"
+                            path="system/vold"
+                            revision="$VOLD_REVISION" />
+            <project path="$DEVICE_PATH"
+                     name="${GITHUB_REPOSITORY}"
+                     remote="github"
+                     revision="${GITHUB_SHA}"
+                     clone-depth="1" />
+            <project path="$COMMON_PATH"
+                     name="TeamWin/android_device_oneplus_sm8150-common"
+                     remote="github"
+                     revision="android-12.1"
+                     clone-depth="1" />
+            <project path="$ONEPLUS_COMMON_PATH"
+                     name="LineageOS/android_device_oneplus_common"
+                     remote="github"
+                     revision="lineage-18.1"
+                     clone-depth="1" />
+            <project path="$KERNEL_PATH"
+                     name="nebrassy/android_kernel_oneplus_sm8150"
+                     remote="github"
+                     revision="android-12.1"
+                     clone-depth="1" />
+          </manifest>
+          EOF
+          "$HOME/bin/repo" sync --force-sync --no-clone-bundle --no-tags \
+            --optimized-fetch --prune --fail-fast -j"$BUILD_JOBS"
+          test "$(git -C bootable/recovery rev-parse HEAD)" = "$RECOVERY_REVISION"
+          test "$(git -C system/vold rev-parse HEAD)" = "$VOLD_REVISION"
+
+      - name: Checkout pinned V4.1 source reference
+        run: |
+          set -euo pipefail
+          ref="$RUNNER_TEMP/h40-vold-hidl-reference"
+          rm -rf "$ref"
+          git init "$ref"
+          git -C "$ref" remote add origin https://github.com/4accccc/android_system_vold.git
+          git -C "$ref" fetch --depth=1 origin "$HIDL_REFERENCE_REVISION"
+          git -C "$ref" checkout --detach FETCH_HEAD
+          test "$(git -C "$ref" rev-parse HEAD)" = "$HIDL_REFERENCE_REVISION"
+
+      - name: Apply V3 through V4.8 compatibility transforms
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/twrp"
+          v3_patch="$PWD/$DEVICE_PATH/ci/twrp-oplus-h40-decrypt.patch"
+          base_transform="$PWD/$DEVICE_PATH/ci/apply-h40-v41-hidl.py"
+          km_fix="$PWD/$DEVICE_PATH/ci/apply-h40-v41-kmcompat.py"
+          v43="$PWD/$DEVICE_PATH/ci/apply-h40-v43-blobprefix-base.py"
+          v44="$PWD/$DEVICE_PATH/ci/apply-h40-v44-upgradeparams-base.py"
+          blobprobe="$PWD/$DEVICE_PATH/ci/apply-h40-v42-blobprobe.py"
+          portidentity="$PWD/$DEVICE_PATH/ci/apply-h40-v46-portidentity.py"
+          fscrypt_lazy="$PWD/$DEVICE_PATH/ci/apply-h40-v46-fscrypt-lazy.py"
+          export_prefix="$PWD/$DEVICE_PATH/ci/apply-h40-v46-export-prefix.py"
+          v46="$PWD/$DEVICE_PATH/ci/apply-h40-v46-depath.py"
+          v47_keyring="$PWD/$DEVICE_PATH/ci/apply-h40-v47-fscrypt-keyring.py"
+          v47="$PWD/$DEVICE_PATH/ci/apply-h40-v47-depath.py"
+          v48_secondary_user="$PWD/$DEVICE_PATH/ci/apply-h40-v48-secondary-user.py"
+          v48="$PWD/$DEVICE_PATH/ci/apply-h40-v48-depath.py"
+          hidl_reference="$RUNNER_TEMP/h40-vold-hidl-reference"
+
+          printf '%s  %s\n' "$V3_PATCH_SHA256" "$v3_patch" | sha256sum --check -
+          python3 -m py_compile \
+            "$base_transform" "$km_fix" "$v43" "$v44" "$blobprobe" \
+            "$portidentity" "$fscrypt_lazy" "$export_prefix" "$v46" \
+            "$v47_keyring" "$v47" "$v48_secondary_user" "$v48"
+          git -C bootable/recovery apply --check --index --whitespace=error-all "$v3_patch"
+          git -C bootable/recovery apply --index --whitespace=error-all "$v3_patch"
+
+          python3 "$base_transform" \
+            "$PWD/bootable/recovery" "$PWD/system/vold" "$hidl_reference"
+          python3 "$km_fix" "$PWD/bootable/recovery" "$PWD/system/vold"
+          python3 "$v48" "$PWD/bootable/recovery" "$PWD/system/vold"
+
+          git -C bootable/recovery add -- \
+            Android.mk oplus_h40_decrypt.cpp oplus_h40_decrypt.hpp partitionmanager.cpp
+          git -C system/vold add -- .
+          git -C bootable/recovery diff --cached --check
+          git -C system/vold diff --cached --check
+
+          # Retain the physically validated V4.1/V4.3/V4.4 boundaries.
+          grep -Fq 'V4_1::support::Keymaster' system/vold/Keymaster.h
+          grep -Fq 'KmDevice::enumerateAvailableDevices()' system/vold/Keymaster.cpp
+          grep -Fq '[H40 KMCOMPAT] constructor: enumerating Keymaster 4.x devices' system/vold/Keymaster.cpp
+          grep -Fq '[H40 BLOBPREFIX] begin:' system/vold/Keymaster.cpp
+          grep -Fq '[H40 BLOBPROBE] characteristics:' system/vold/Keymaster.cpp
+          grep -Fq '[H40 UPGRADEPARAMS] begin:' system/vold/Keymaster.cpp
+          grep -Fq '[H40 UPGRADEPARAMS] upgrade:' system/vold/Keymaster.cpp
+          grep -Fq 'if (!opHandle.getUpgradedBlob()) return opHandle;' system/vold/KeyStorage.cpp
+
+          # V4.6 fix 1: installed-system identity, read-only, no hardcoded ROM identity.
+          grep -Fq 'DiscoverInstalledSystemIdentity' bootable/recovery/oplus_h40_decrypt.cpp
+          grep -Fq 'MS_RDONLY | MS_NOSUID | MS_NODEV | MS_NOEXEC' \
+            bootable/recovery/oplus_h40_decrypt.cpp
+          grep -Fq 'ro.system.build.version.release' bootable/recovery/oplus_h40_decrypt.cpp
+          grep -Fq 'ro.system.build.version.security_patch' bootable/recovery/oplus_h40_decrypt.cpp
+          grep -Fq '[H40 PORTIDENTITY] source:' bootable/recovery/oplus_h40_decrypt.cpp
+          grep -Fq '[H40 PORTIDENTITY] applied:' bootable/recovery/oplus_h40_decrypt.cpp
+          if grep -Fq 'constexpr char kSystemRelease[] = "14";' bootable/recovery/oplus_h40_decrypt.cpp; then
+            echo 'hardcoded V4.5 Android release survived' >&2
+            exit 1
+          fi
+          if grep -Fq 'constexpr char kSystemSecurityPatch[] = "2025-03-01";' \
+              bootable/recovery/oplus_h40_decrypt.cpp; then
+            echo 'hardcoded V4.5 system SPL survived' >&2
+            exit 1
+          fi
+          if grep -Fq 'RunResetprop("ro.vendor.build.security_patch"' \
+              bootable/recovery/oplus_h40_decrypt.cpp; then
+            echo 'vendor SPL override is forbidden' >&2
+            exit 1
+          fi
+
+          # V4.6 fix 2: constructor-safe key-path state.
+          grep -Fq 'GetDePolicies()' system/vold/FsCrypt.cpp
+          grep -Fq 'GetCePolicies()' system/vold/FsCrypt.cpp
+          grep -Fq 'GetEphemeralUsers()' system/vold/FsCrypt.cpp
+          grep -Fq 'GetDeKeyRawRef()' system/vold/FsCrypt.cpp
+          grep -Fq 'GetFstabDefault()' system/vold/VoldUtil.cpp
+          grep -Fq 'GetEmptyAuthentication()' system/vold/KeyStorage.cpp
+          grep -Fq 'GetKeyUpgradeLock()' system/vold/KeyStorage.cpp
+          grep -Fq 'GetKeyDirsToCommit()' system/vold/KeyStorage.cpp
+          grep -Fq '[H40 FSCRYPTLAZY] DE policies ready:' system/vold/FsCrypt.cpp
+          grep -Fq '[H40 FSCRYPTLAZY] DE policy insertion complete:' system/vold/FsCrypt.cpp
+          if grep -Fq 'std::map<userid_t, EncryptionPolicy> s_de_policies;' system/vold/FsCrypt.cpp; then
+            echo 'namespace-scope DE policy map survived' >&2
+            exit 1
+          fi
+          if grep -Fq 'std::map<userid_t, EncryptionPolicy> s_ce_policies;' system/vold/FsCrypt.cpp; then
+            echo 'namespace-scope CE policy map survived' >&2
+            exit 1
+          fi
+          if grep -Fq 'static std::mutex key_upgrade_lock;' system/vold/KeyStorage.cpp; then
+            echo 'namespace-scope KeyStorage upgrade mutex survived' >&2
+            exit 1
+          fi
+          if grep -Fq 'static std::vector<std::string> key_dirs_to_commit;' \
+              system/vold/KeyStorage.cpp; then
+            echo 'namespace-scope KeyStorage deferred-directory vector survived' >&2
+            exit 1
+          fi
+          if grep -R -n -F 'fstab_default' system/vold \
+              --include='*.cpp' --include='*.cc' --include='*.h'; then
+            echo 'namespace-scope/default Fstab reference survived' >&2
+            exit 1
+          fi
+
+          # V4.6 fix 3: pKMblob-aware wrapped-key export; no key-blob fallback.
+          grep -Fq '[H40 BLOBPREFIX] export:' system/vold/Keymaster.cpp
+          grep -Fq '[H40 BLOBPREFIX] export result:' system/vold/Keymaster.cpp
+          grep -Fq 'UnwrapKs2KeyBlob(storedBlob)' system/vold/Keymaster.cpp
+          grep -Fq 'malformed pKMblob prefix' system/vold/Keymaster.cpp
+          grep -Fq 'km_hidl::support::blob2hidlVec(' system/vold/Keymaster.cpp
+          test "$(grep -Fo 'IsUsableHidlKeyBlob(' system/vold/Keymaster.cpp | wc -l)" -eq 9
+          if grep -Fq 'auto keyBlob = blob2hidlVec(' system/vold/Keymaster.cpp; then
+            echo 'unqualified blob2hidlVec survived' >&2
+            exit 1
+          fi
+          if grep -Fq 'Using key directly' system/vold/Keymaster.cpp; then
+            echo 'unsafe wrapped-key export fallback survived' >&2
+            exit 1
+          fi
+          if grep -Fq 'key->assign(kmKey.begin(), kmKey.end())' system/vold/Keymaster.cpp; then
+            echo 'direct use of Keymaster blob as fscrypt key survived' >&2
+            exit 1
+          fi
+
+          # V4.7 fix 1: create the recovery process's fscrypt session keyring
+          # before TWRP enters its metadata/Decrypt_DE path, then recheck it
+          # immediately before proprietary setup_de_ce(0).
+          grep -Fq '#include <keyutils.h>' bootable/recovery/oplus_h40_decrypt.cpp
+          grep -Fq 'keyctl_search(KEY_SPEC_SESSION_KEYRING, "keyring", kName, 0)' \
+            bootable/recovery/oplus_h40_decrypt.cpp
+          grep -Fq 'add_key("keyring", kName, nullptr, 0, KEY_SPEC_SESSION_KEYRING)' \
+            bootable/recovery/oplus_h40_decrypt.cpp
+          grep -Fq '[H40 FSCRYPTKEYRING] existing:' bootable/recovery/oplus_h40_decrypt.cpp
+          grep -Fq '[H40 FSCRYPTKEYRING] created:' bootable/recovery/oplus_h40_decrypt.cpp
+          grep -Fq '[H40 FSCRYPTKEYRING] ready before TWRP metadata decrypt' \
+            bootable/recovery/oplus_h40_decrypt.cpp
+          grep -Fq '[H40 FSCRYPTKEYRING] ready before setup_de_ce(0)' \
+            bootable/recovery/oplus_h40_decrypt.cpp
+          python3 - <<'PY'
+          from pathlib import Path
+
+          adapter = Path("bootable/recovery/oplus_h40_decrypt.cpp").read_text()
+          runtime_start = adapter.index("Result PrepareMetadataRuntime()")
+          runtime_end = adapter.index("\nbool IsActive()", runtime_start)
+          runtime_body = adapter[runtime_start:runtime_end]
+          assert "if (!EnsureFscryptSessionKeyring())" in runtime_body
+          assert "ready before TWRP metadata decrypt" in runtime_body
+          assert runtime_body.index("if (!EnsureFscryptSessionKeyring())") < \
+                 runtime_body.index("if (api.handle == nullptr)")
+
+          setup_start = adapter.index("bool PrepareUser0DeState(")
+          setup_end = adapter.index("\n}  // namespace", setup_start)
+          setup_body = adapter[setup_start:setup_end]
+          assert setup_body.index("if (!EnsureFscryptSessionKeyring())") < \
+                 setup_body.index("const bool setup_succeeded = api.setup_de_ce(0);")
+
+          manager = Path("bootable/recovery/partitionmanager.cpp").read_text()
+          decrypt_start = manager.index("void TWPartitionManager::Decrypt_Data()")
+          decrypt_end = manager.index("\nint TWPartitionManager::Decrypt_Device(", decrypt_start)
+          decrypt_body = manager[decrypt_start:decrypt_end]
+          assert decrypt_body.index("twrp::oplus_h40::PrepareMetadataRuntime()") < \
+                 decrypt_body.index("android::vold::fscrypt_mount_metadata_encrypted(")
+          PY
+
+          # V4.7 fix 2: encryption options/fstab are authoritative. Never
+          # invert raw and hardware-wrapped modes after an unrelated failure.
+          grep -Fq 'options->version == 1 && entry->fs_mgr_flags.wrapped_key' \
+            system/vold/FsCrypt.cpp
+          grep -Fq '[H40 FSCRYPTMODE] data options:' system/vold/FsCrypt.cpp
+          grep -Fq '[H40 FSCRYPTMODE] system key install failed without mode fallback:' \
+            system/vold/FsCrypt.cpp
+          grep -Fq '[H40 FSCRYPTMODE] system key installed without mode fallback:' \
+            system/vold/FsCrypt.cpp
+          for forbidden in \
+              'bool retry' \
+              '!retry' \
+              'Trying %s wrappedkey' \
+              'goto install' \
+              'fs_mgr_flags.wrapped_key =' \
+              'options.use_hw_wrapped_key = !options.use_hw_wrapped_key'; do
+            if grep -Fq "$forbidden" system/vold/FsCrypt.cpp; then
+              echo "unsafe V4.7 key-mode fallback survived: $forbidden" >&2
+              exit 1
+            fi
+          done
+          if grep -Eq '^[[:space:]]*install:$' system/vold/FsCrypt.cpp; then
+            echo 'unsafe V4.7 retry label survived' >&2
+            exit 1
+          fi
+
+          # V4.8: canonical secondary profiles may coexist on disk, but only
+          # user 0 may enter the proprietary credential path.
+          grep -Fq '[H40 USERMAP] ignoring secondary user id' \
+            bootable/recovery/oplus_h40_decrypt.cpp
+          grep -Fq 'refusing malformed user entry %s/%s' \
+            bootable/recovery/oplus_h40_decrypt.cpp
+          if grep -Fq 'refusing secondary/unsupported user id' \
+              bootable/recovery/oplus_h40_decrypt.cpp; then
+            echo 'obsolete all-secondary fatal guard survived' >&2
+            exit 1
+          fi
+          python3 - <<'PY'
+          from pathlib import Path
+
+          adapter = Path("bootable/recovery/oplus_h40_decrypt.cpp").read_text()
+          scan_start = adapter.index("bool ScanSingleUserDirectory(")
+          scan_end = adapter.index("\nbool ValidateSingleUser0DeLayout()", scan_start)
+          scan = adapter[scan_start:scan_end]
+          assert scan.count("if (user_id == INT_MAX)") == 1
+          assert scan.count("if (user_id != 0)") == 1
+          assert scan.index("if (user_id == INT_MAX)") < scan.index("if (user_id != 0)")
+          secondary_start = scan.index("if (user_id != 0)")
+          secondary_end = scan.index("\n        }", secondary_start)
+          secondary = scan[secondary_start:secondary_end]
+          assert "errno = 0;" in secondary
+          assert secondary.index("errno = 0;") < secondary.index("continue;")
+          assert scan.index("if (user_id != 0)") < scan.index("found_user0 = true;")
+          assert adapter.count("*user_id = INT_MAX;") == 2
+
+          layout_start = adapter.index("bool ValidateSingleUser0DeLayout()")
+          layout_end = adapter.index("\nbool CheckFscryptKeyPresent(", layout_start)
+          layout = adapter[layout_start:layout_end]
+          required_layout = (
+              'CheckReadableFile("/data/unencrypted/key/version")',
+              'CheckReadableDirectory("/data/system_de/0")',
+              'CheckReadableFile("/data/system/users/0.xml")',
+              'ScanSingleUserDirectory("/data/system_de", "", true)',
+              'ScanSingleUserDirectory("/data/system/users", "", false)',
+              'ScanSingleUserDirectory("/data/system/users", ".xml", true)',
+          )
+          assert all(item in layout for item in required_layout)
+
+          credential = adapter[adapter.index("Result DecryptUser("):]
+          assert "if (user_id != 0)" in credential
+          assert "refusing credential for user %d" in credential
+
+          manager = Path("bootable/recovery/partitionmanager.cpp").read_text()
+          assert "if (oplus_active && user_id != 0)" in manager
+          assert "secondary-user sweep disabled" in manager
+          synth_start = manager.index(
+              "std::vector<users_struct>* user_list = Get_Users_List()"
+          )
+          synth_end = manager.index("Check_Users_Decryption_Status();", synth_start)
+          synth = manager[synth_start:synth_end]
+          assert 'user0.userId = "0";' in synth
+          assert synth.count("user_list->push_back(") == 1
+          PY
+
+          # Default branch invariant is checked again after all source transforms.
+          actual=$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" \
+            refs/heads/android-12.1 | awk '{print $1}')
+          test "$actual" = "$IMMUTABLE_DEFAULT_SHA"
+
+          printf '\n# CI-only: compile/link the H.40 V4.8 secondary-user adapter.\n' \
+            >> "$DEVICE_PATH/BoardConfig.mk"
+          printf 'TW_INCLUDE_OPLUS_H40_DECRYPT := true\n' >> "$DEVICE_PATH/BoardConfig.mk"
+
+          actual_vold_tree=$(git -C system/vold write-tree)
+          test "$actual_vold_tree" = "$V47_VOLD_TREE"
+
+          {
+            echo "workflow_repository=${GITHUB_REPOSITORY}"
+            echo "workflow_revision=${GITHUB_SHA}"
+            echo "immutable_default=${IMMUTABLE_DEFAULT_SHA}"
+            echo "recovery_base=$RECOVERY_REVISION"
+            echo "vold_base=$VOLD_REVISION"
+            echo "hidl_reference=$HIDL_REFERENCE_REVISION"
+            echo "v3_patch_sha256=$(sha256sum "$v3_patch" | awk '{print $1}')"
+            echo "v42_blobprobe_sha256=$(sha256sum "$blobprobe" | awk '{print $1}')"
+            echo "v46_portidentity_sha256=$(sha256sum "$portidentity" | awk '{print $1}')"
+            echo "v46_fscrypt_lazy_sha256=$(sha256sum "$fscrypt_lazy" | awk '{print $1}')"
+            echo "v46_export_prefix_sha256=$(sha256sum "$export_prefix" | awk '{print $1}')"
+            echo "v46_composite_sha256=$(sha256sum "$v46" | awk '{print $1}')"
+            echo "v47_keyring_sha256=$(sha256sum "$v47_keyring" | awk '{print $1}')"
+            echo "v47_composite_sha256=$(sha256sum "$v47" | awk '{print $1}')"
+            echo "v48_secondary_user_sha256=$(sha256sum "$v48_secondary_user" | awk '{print $1}')"
+            echo "v48_composite_sha256=$(sha256sum "$v48" | awk '{print $1}')"
+            echo "recovery_tree=$(git -C bootable/recovery write-tree)"
+            echo "vold_tree=$actual_vold_tree"
+            echo "metadata_keymaster=V4.5_identity_dynamicized"
+            echo "fscrypt_state=lazy_first_use"
+            echo "key_upgrade_state=lazy_first_use"
+            echo "malformed_pKMblob=fail_closed"
+            echo "wrapped_export=pKMblob_unwrap_fail_closed"
+            echo "fscrypt_session_keyring=required_before_metadata_de"
+            echo "file_key_mode=explicit_no_runtime_inversion"
+            echo "secondary_profiles=canonical_ignored_user0_only"
+            echo "malformed_user_ids=fail_closed"
+            echo "persistent_key_blobs_modified=no"
+          } | tee "$GITHUB_WORKSPACE/build-provenance.txt"
+
+          git -C bootable/recovery diff --cached --stat | tee "$GITHUB_WORKSPACE/recovery-diffstat.txt"
+          git -C system/vold diff --cached --stat | tee "$GITHUB_WORKSPACE/vold-diffstat.txt"
+          git -C system/vold diff --cached > "$GITHUB_WORKSPACE/vold-v48-secondary-user.patch"
+          git -C bootable/recovery diff --cached > "$GITHUB_WORKSPACE/recovery-v48-secondary-user.patch"
+
+      - name: Configure build
+        run: |
+          set -eo pipefail
+          cd "$RUNNER_TEMP/twrp"
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export BUILD_USERNAME=KAI-Miru
+          export BUILD_HOSTNAME=github-actions
+          source build/envsetup.sh
+          lunch twrp_guacamole-eng
+          test "$(get_build_var TW_INCLUDE_OPLUS_H40_DECRYPT)" = true
+
+      - name: Compile and link recovery
+        id: build
+        run: |
+          set -eo pipefail
+          cd "$RUNNER_TEMP/twrp"
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export BUILD_USERNAME=KAI-Miru
+          export BUILD_HOSTNAME=github-actions
+          source build/envsetup.sh
+          lunch twrp_guacamole-eng
+          mka recovery -j"$BUILD_JOBS" 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+
+      - name: Verify V4.8 ELF and runtime contract
+        if: steps.build.outcome == 'success'
+        run: |
+          set -euo pipefail
+          binary="$RUNNER_TEMP/twrp/out/target/product/guacamole/recovery/root/system/bin/recovery"
+          test -f "$binary"
+          bash "$RUNNER_TEMP/twrp/$DEVICE_PATH/ci/verify-h40-adapter-elf.sh" \
+            "$binary" "$GITHUB_WORKSPACE"
+          strings -a "$binary" > "$GITHUB_WORKSPACE/recovery.strings"
+          readelf --dynamic --wide "$binary" > "$GITHUB_WORKSPACE/recovery.dynamic"
+          awk '/\(NEEDED\)/ { line=$0; sub(/^.*Shared library: \[/,"",line); sub(/\].*$/,"",line); print line }' \
+            "$GITHUB_WORKSPACE/recovery.dynamic" > "$GITHUB_WORKSPACE/recovery.dt-needed"
+
+          for marker in \
+            '[H40 KMCOMPAT] constructor: enumerating Keymaster 4.x devices' \
+            '[H40 KMCOMPAT] retrieve: constructing Keymaster' \
+            '[H40 BLOBPREFIX] begin:' \
+            '[H40 BLOBPROBE] characteristics:' \
+            '[H40 UPGRADEPARAMS] begin:' \
+            '[H40 UPGRADEPARAMS] upgrade:' \
+            '[H40 PORTIDENTITY] source:' \
+            '[H40 PORTIDENTITY] applied:' \
+            '[H40 FSCRYPTLAZY] DE policies ready:' \
+            '[H40 FSCRYPTLAZY] DE policy insertion complete:' \
+            '[H40 BLOBPREFIX] export:' \
+            '[H40 BLOBPREFIX] export result:' \
+            '[H40 FSCRYPTKEYRING] existing:' \
+            '[H40 FSCRYPTKEYRING] created:' \
+            '[H40 FSCRYPTKEYRING] ready before TWRP metadata decrypt' \
+            '[H40 FSCRYPTKEYRING] ready before setup_de_ce(0)' \
+            '[H40 FSCRYPTMODE] data options:' \
+            '[H40 FSCRYPTMODE] system key install failed without mode fallback:' \
+            '[H40 FSCRYPTMODE] system key installed without mode fallback:' \
+            '[H40 USERMAP] ignoring secondary user id %d from %s/%s; user0-only decrypt remains enforced' \
+            'Oplus H.40 user0-only mode refusing malformed user entry %s/%s' \
+            'malformed pKMblob prefix'; do
+            grep -Fq "$marker" "$GITHUB_WORKSPACE/recovery.strings"
+          done
+
+          grep -Fqx 'android.hardware.keymaster@4.0.so' "$GITHUB_WORKSPACE/recovery.dt-needed"
+          grep -Fqx 'android.hardware.keymaster@4.1.so' "$GITHUB_WORKSPACE/recovery.dt-needed"
+          grep -Fqx 'libkeymaster4support.so' "$GITHUB_WORKSPACE/recovery.dt-needed"
+          grep -Fqx 'libkeymaster4_1support.so' "$GITHUB_WORKSPACE/recovery.dt-needed"
+          grep -Fqx 'libkeyutils.so' "$GITHUB_WORKSPACE/recovery.dt-needed"
+          if grep -Fqx 'libdecrypt_recovery.so' "$GITHUB_WORKSPACE/recovery.dt-needed"; then
+            echo 'forbidden hard DT_NEEDED on libdecrypt_recovery.so' >&2
+            exit 1
+          fi
+          if grep -Fq 'Using key directly' "$GITHUB_WORKSPACE/recovery.strings"; then
+            echo 'unsafe wrapped-key export fallback is present in final ELF' >&2
+            exit 1
+          fi
+          if grep -Fq 'Trying %s wrappedkey' "$GITHUB_WORKSPACE/recovery.strings"; then
+            echo 'unsafe raw/wrapped retry is present in final ELF' >&2
+            exit 1
+          fi
+          if grep -Fq '2025-03-01' "$GITHUB_WORKSPACE/recovery.strings"; then
+            echo 'V4.5 hardcoded system SPL survived in final ELF' >&2
+            exit 1
+          fi
+          if grep -Fq 'refusing secondary/unsupported user id' \
+              "$GITHUB_WORKSPACE/recovery.strings"; then
+            echo 'obsolete all-secondary fatal guard is present in final ELF' >&2
+            exit 1
+          fi
+          sha256sum "$binary" | tee "$GITHUB_WORKSPACE/recovery-v48-secondary-user.sha256"
+
+      - name: Upload V4.8 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: guacamole-h40-v48-secondary-user-diagnostics
+          if-no-files-found: warn
+          path: |
+            build.log
+            build-provenance.txt
+            recovery-diffstat.txt
+            vold-diffstat.txt
+            vold-v48-secondary-user.patch
+            recovery-v48-secondary-user.patch
+            recovery.strings
+            recovery.dynamic
+            recovery.dt-needed
+            recovery-v48-secondary-user.sha256
+            h40-adapter-verification.txt
+
+      - name: Upload V4.8 recovery executable
+        if: steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: guacamole-h40-v48-secondary-user-recovery
+          if-no-files-found: error
+          path: ${{ runner.temp }}/twrp/out/target/product/guacamole/recovery/root/system/bin/recovery
