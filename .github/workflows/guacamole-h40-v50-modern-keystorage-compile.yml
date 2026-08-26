@@ -733,6 +733,17 @@ jobs:
           grep -Eq '^-rwxr-xr-x .* guacamole-h40-v50-runtime-payload/oplus_h40_credential_helper$' \
             "$GITHUB_WORKSPACE/guacamole-h40-v50-runtime-payload.files"
 
+      - name: Upload successfully packaged V5.0 runtime executables
+        if: ${{ always() && steps.runtime_package.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: guacamole-h40-v50-modern-keystorage-runtime
+          if-no-files-found: error
+          path: |
+            guacamole-h40-v50-runtime-payload.tar.gz
+            guacamole-h40-v50-runtime-payload.tar.gz.sha256
+            guacamole-h40-v50-runtime-payload/INSTALL-MANIFEST.txt
+
       - name: Verify V5.0 ELF and stock-runtime helper contract
         id: elf_gate
         if: ${{ always() && steps.build.outcome == 'success' }}
@@ -781,7 +792,7 @@ jobs:
             'Oplus H.40 user0-only mode refusing malformed user entry %s/%s' \
             '[H40 V50 HANDOFF] launching exact-H.40 isolated credential gate for user 0' \
             '[H40 V50 HANDOFF] OEM credential accepted; requesting modern SP unwrap' \
-            '[H40 V50 HANDOFF] deriving the accepted user 0 credential through TeamWin SP' \
+            '[H40 V50 HANDOFF] deriving the accepted user 0 credential in an isolated TeamWin SP worker' \
             '[H40 V50 HANDOFF] modern user 0 CE postcondition satisfied' \
             '[H40 V50 HELPER] OEM verify started attempt=%llu' \
             '[H40 V50 CRASH] helper pid=%d tid=%u signal=%d code=%d stage=%u' \
@@ -789,7 +800,10 @@ jobs:
             'modern synthetic-password handoff failed after OEM acceptance' \
             'modern handoff returned without CE key/layout proof' \
             'malformed pKMblob prefix'; do
-            grep -Fq "$marker" "$GITHUB_WORKSPACE/recovery.strings"
+            if ! grep -Fq "$marker" "$GITHUB_WORKSPACE/recovery.strings"; then
+              echo "missing required recovery ELF marker: $marker" >&2
+              exit 1
+            fi
           done
 
           grep -Fqx 'android.hardware.keymaster@4.0.so' "$GITHUB_WORKSPACE/recovery.dt-needed"
@@ -813,9 +827,12 @@ jobs:
               '/data/media/0' \
               'I:Oplus H.40 decrypt ABI loaded' \
               'I:Oplus H.40 v4 hybrid activated; TWRP owns metadata mapping, OEM owns DE/CE' \
-              'E:Oplus H.40 v4 hybrid adapter entered process-lifetime fatal state: %s' \
+              'E:Oplus H.40 v5 hybrid adapter entered process-lifetime fatal state: %s' \
               'I:Oplus H.40 v3 FS_IOC_GET_ENCRYPTION_KEY_STATUS PRESENT for %s: status=%u'; do
-            grep -Fq "$marker" "$GITHUB_WORKSPACE/recovery.strings"
+            if ! grep -Fq "$marker" "$GITHUB_WORKSPACE/recovery.strings"; then
+              echo "missing required recovery ABI marker: $marker" >&2
+              exit 1
+            fi
           done
           private_verify='_Z21OplusCredentialVerifyNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEEi'
           if grep -Fq "$private_verify" "$GITHUB_WORKSPACE/recovery.strings"; then
@@ -873,7 +890,10 @@ jobs:
               '_Z17get_password_typei' \
               'stock OEM library identity mismatch' \
               'exact stock OEM library loaded; keyring=%d'; do
-            grep -Fq "$marker" "$GITHUB_WORKSPACE/credential-helper.strings"
+            if ! grep -Fq "$marker" "$GITHUB_WORKSPACE/credential-helper.strings"; then
+              echo "missing required credential-helper marker: $marker" >&2
+              exit 1
+            fi
           done
           if grep -Fq '_Z21fscrypt_init_user0_cev' "$GITHUB_WORKSPACE/credential-helper.strings"; then
             echo 'legacy CE initializer symbol survived in helper' >&2
@@ -898,17 +918,6 @@ jobs:
             echo 'helper_interpreter=/system/bin/linker64'
             echo 'helper_binary_uploaded=true'
           } | tee "$GITHUB_WORKSPACE/h40-adapter-verification.txt"
-
-      - name: Upload verified V5.0 runtime executables
-        if: ${{ always() && steps.runtime_package.outcome == 'success' && steps.elf_gate.outcome == 'success' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: guacamole-h40-v50-modern-keystorage-runtime
-          if-no-files-found: error
-          path: |
-            guacamole-h40-v50-runtime-payload.tar.gz
-            guacamole-h40-v50-runtime-payload.tar.gz.sha256
-            guacamole-h40-v50-runtime-payload/INSTALL-MANIFEST.txt
 
       - name: Verify and package TWRP resources
         id: twres_gate
