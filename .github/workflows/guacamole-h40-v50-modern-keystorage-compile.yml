@@ -1,5 +1,5 @@
 # Historical filename retained so existing workflow links and dispatches stay valid.
-name: Guacamole H.40 V5.1 parent keystorage and private keystore2
+name: Guacamole H.40 V5.2 SDK30 Binder compatibility
 
 on:
   push:
@@ -31,6 +31,7 @@ on:
       - "ci/apply-h40-v51-keystore2-recovery-permissions.py"
       - "ci/validate-h40-v51-keystore2-recovery-permissions.py"
       - "ci/package-h40-v51-keystore2-runtime.py"
+      - "ci/apply-h40-v52-binder-v0.py"
       - "recovery/root/twres/**"
       - "BoardConfig.mk"
       - "device.mk"
@@ -41,7 +42,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: guacamole-h40-v51-parent-keystorage-${{ github.ref }}
+  group: guacamole-h40-v52-binder-compat-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -59,6 +60,7 @@ jobs:
       RECOVERY_REVISION: 5c3d206a5eeb3d446bcda8248a405a4b278bab5c
       VOLD_REVISION: a164ba05c5fef288059774a776b2e6e1119957cf
       SECURITY_REVISION: 14737db1429b8eebc15568bc748b2cd79ccad5c2
+      NATIVE_REVISION: 89c808424fbce9e40c0d4e0d1920b3c64a191b7f
       V47_VOLD_TREE: a7ae1303e2a96019b529cb091517135c2e93ed49
       HIDL_REFERENCE_REVISION: f0f84e9646c303db32dc38e5c8faaa93cecf4736
       V3_PATCH_SHA256: 81046f75eea3b1445f8e994cd9b6b62a48de8799bc4777dd2a2c3ec70e391020
@@ -115,7 +117,7 @@ jobs:
             --manifest-url "$MANIFEST_URL" \
             --manifest-branch "$MANIFEST_BRANCH"
           mkdir -p .repo/local_manifests
-          cat > .repo/local_manifests/oneplus-v51-parent-keystorage.xml <<EOF
+          cat > .repo/local_manifests/oneplus-v52-binder-compat.xml <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
           <manifest>
             <extend-project name="android_bootable_recovery"
@@ -127,6 +129,9 @@ jobs:
             <extend-project name="android_system_security"
                             path="system/security"
                             revision="$SECURITY_REVISION" />
+            <extend-project name="platform/frameworks/native"
+                            path="frameworks/native"
+                            revision="$NATIVE_REVISION" />
             <project path="$DEVICE_PATH"
                      name="${GITHUB_REPOSITORY}"
                      remote="github"
@@ -154,6 +159,7 @@ jobs:
           test "$(git -C bootable/recovery rev-parse HEAD)" = "$RECOVERY_REVISION"
           test "$(git -C system/vold rev-parse HEAD)" = "$VOLD_REVISION"
           test "$(git -C system/security rev-parse HEAD)" = "$SECURITY_REVISION"
+          test "$(git -C frameworks/native rev-parse HEAD)" = "$NATIVE_REVISION"
 
       - name: Checkout pinned V4.1 source reference
         run: |
@@ -166,7 +172,7 @@ jobs:
           git -C "$ref" checkout --detach FETCH_HEAD
           test "$(git -C "$ref" rev-parse HEAD)" = "$HIDL_REFERENCE_REVISION"
 
-      - name: Apply V3 through V5.1 compatibility transforms
+      - name: Apply V3 through V5.2 compatibility transforms
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/twrp"
@@ -194,6 +200,7 @@ jobs:
           v51_policy="$PWD/$DEVICE_PATH/ci/apply-h40-v51-keystore2-recovery-permissions.py"
           v51_policy_validator="$PWD/$DEVICE_PATH/ci/validate-h40-v51-keystore2-recovery-permissions.py"
           v51_packager="$PWD/$DEVICE_PATH/ci/package-h40-v51-keystore2-runtime.py"
+          v52_binder="$PWD/$DEVICE_PATH/ci/apply-h40-v52-binder-v0.py"
           hidl_reference="$RUNNER_TEMP/h40-vold-hidl-reference"
 
           printf '%s  %s\n' "$V3_PATCH_SHA256" "$v3_patch" | sha256sum --check -
@@ -202,7 +209,8 @@ jobs:
             "$portidentity" "$fscrypt_lazy" "$export_prefix" "$v46" \
             "$v47_keyring" "$v47" "$v48_secondary_user" "$v48" \
             "$v49_helper" "$v49" "$v50_modern_keystorage" "$v50" \
-            "$v51_parent" "$v51_policy" "$v51_policy_validator" "$v51_packager"
+            "$v51_parent" "$v51_policy" "$v51_policy_validator" "$v51_packager" \
+            "$v52_binder"
           git -C bootable/recovery apply --check --index --whitespace=error-all "$v3_patch"
           git -C bootable/recovery apply --index --whitespace=error-all "$v3_patch"
 
@@ -223,6 +231,7 @@ jobs:
             "$PWD/bootable/recovery" "$PWD/system/vold"
           python3 "$v51_policy" "$PWD/system/security"
           python3 "$v51_policy_validator" "$PWD/system/security"
+          python3 "$v52_binder" "$PWD/frameworks/native"
 
           git -C bootable/recovery add -- \
             Android.mk oplus_h40_decrypt.cpp oplus_h40_decrypt.hpp \
@@ -231,9 +240,36 @@ jobs:
             partitionmanager.cpp
           git -C system/vold add -- .
           git -C system/security add -- .
+          git -C frameworks/native add -- libs/binder/Parcel.cpp
           git -C bootable/recovery diff --cached --check
           git -C system/vold diff --cached --check
           git -C system/security diff --cached --check
+          git -C frameworks/native diff --cached --check
+
+          # V5.2: keep Android 12.1's packed Category internally and for Binder
+          # RPC, but bridge the retained SDK30 servicemanager's raw stability
+          # levels at the kernel-Binder Parcel boundary only.
+          parcel=frameworks/native/libs/binder/Parcel.cpp
+          grep -Fq 'H40_RECOVERY_BINDER_STABILITY_V0_V52' "$parcel"
+          grep -Fq 'isForRpc() ? category.repr()' "$parcel"
+          grep -Fq ': static_cast<int32_t>(category.level));' "$parcel"
+          grep -Fq 'if (!isForRpc() && IsH40LegacyKernelBinderStability(stability))' "$parcel"
+          grep -Fq 'case 0:   // UNDECLARED' "$parcel"
+          grep -Fq 'case 3:   // VENDOR' "$parcel"
+          grep -Fq 'case 12:  // SYSTEM' "$parcel"
+          grep -Fq 'case 63:  // VINTF' "$parcel"
+          grep -Fq 'constexpr uint8_t kH40BinderWireFormatVersion = 1;' "$parcel"
+          grep -Fq '.version = kH40BinderWireFormatVersion' "$parcel"
+          grep -Fq '.reserved = {0}' "$parcel"
+          grep -Fq 'static_cast<internal::Stability::Level>(stability)' "$parcel"
+          if grep -Fq 'return writeInt32(category.repr());' "$parcel"; then
+            echo 'unconditional packed Binder stability serialization survived V5.2' >&2
+            exit 1
+          fi
+          if grep -Fq 'Stability::Category::currentFromLevel(' "$parcel"; then
+            echo 'undefined-inline Binder Category helper call survived V5.2' >&2
+            exit 1
+          fi
 
           # Retain the physically validated V4.1/V4.3/V4.4 boundaries.
           grep -Fq 'V4_1::support::Keymaster' system/vold/Keymaster.h
@@ -637,7 +673,7 @@ jobs:
             refs/heads/android-12.1 | awk '{print $1}')
           test "$actual" = "$IMMUTABLE_DEFAULT_SHA"
 
-          printf '\n# CI-only: compile/link the H.40 V5.1 parent-keystorage adapter.\n' \
+          printf '\n# CI-only: compile/link the H.40 V5.2 Binder-compatible adapter.\n' \
             >> "$DEVICE_PATH/BoardConfig.mk"
           printf 'TW_INCLUDE_OPLUS_H40_DECRYPT := true\n' >> "$DEVICE_PATH/BoardConfig.mk"
 
@@ -652,6 +688,7 @@ jobs:
             echo "recovery_base=$RECOVERY_REVISION"
             echo "vold_base=$VOLD_REVISION"
             echo "security_base=$SECURITY_REVISION"
+            echo "frameworks_native_base=$NATIVE_REVISION"
             echo "hidl_reference=$HIDL_REFERENCE_REVISION"
             echo "v3_patch_sha256=$(sha256sum "$v3_patch" | awk '{print $1}')"
             echo "v42_blobprobe_sha256=$(sha256sum "$blobprobe" | awk '{print $1}')"
@@ -679,9 +716,11 @@ jobs:
             echo "v51_keystore_policy_sha256=$(sha256sum "$v51_policy" | awk '{print $1}')"
             echo "v51_keystore_policy_validator_sha256=$(sha256sum "$v51_policy_validator" | awk '{print $1}')"
             echo "v51_keystore2_packager_sha256=$(sha256sum "$v51_packager" | awk '{print $1}')"
+            echo "v52_binder_transform_sha256=$(sha256sum "$v52_binder" | awk '{print $1}')"
             echo "recovery_tree=$(git -C bootable/recovery write-tree)"
             echo "v49_vold_tree=$v49_vold_tree"
             echo "vold_tree=$actual_vold_tree"
+            echo "frameworks_native_tree=$(git -C frameworks/native write-tree)"
             echo "metadata_keymaster=V4.5_identity_dynamicized"
             echo "fscrypt_state=lazy_first_use"
             echo "key_upgrade_state=lazy_first_use"
@@ -704,14 +743,20 @@ jobs:
             echo "keystore2_runtime=same_build_private_dt_needed_closure"
             echo "keystore2_policy=exact_recovery_sid_compatibility_shim"
             echo "keystore2_contexts=stock_type_merge_only"
+            echo "binder_kernel_wire=SDK30_raw_levels"
+            echo "binder_rpc_wire=A12.1_packed_category"
+            echo "stock_servicemanager=preserved"
+            echo "stock_libbinder=preserve_byte_for_byte"
           } | tee "$GITHUB_WORKSPACE/build-provenance.txt"
 
           git -C bootable/recovery diff --cached --stat | tee "$GITHUB_WORKSPACE/recovery-diffstat.txt"
           git -C system/vold diff --cached --stat | tee "$GITHUB_WORKSPACE/vold-diffstat.txt"
           git -C system/security diff --cached --stat | tee "$GITHUB_WORKSPACE/security-diffstat.txt"
+          git -C frameworks/native diff --cached --stat | tee "$GITHUB_WORKSPACE/native-diffstat.txt"
           git -C system/vold diff --cached > "$GITHUB_WORKSPACE/vold-v51-parent-keystorage.patch"
           git -C bootable/recovery diff --cached > "$GITHUB_WORKSPACE/recovery-v51-parent-keystorage.patch"
           git -C system/security diff --cached > "$GITHUB_WORKSPACE/security-v51-keystore-policy.patch"
+          git -C frameworks/native diff --cached > "$GITHUB_WORKSPACE/native-v52-binder-v0.patch"
 
       - name: Configure build
         run: |
@@ -738,33 +783,47 @@ jobs:
           mka recovery -j"$BUILD_JOBS" 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
 
       # These steps deliberately precede every packaging and validation gate.
-      # Once compilation succeeds, later failures must never strand the three
-      # binaries needed to diagnose or perform a manual hybrid-ramdisk repack.
-      - name: Stage compiled V5.1 binaries failsafe
+      # Once compilation succeeds, later failures must never strand the
+      # recovery binaries or the V5.2-patched private libbinder needed for a
+      # manual hybrid-ramdisk repack.
+      - name: Stage compiled V5.2 payload failsafe
         id: compiled_failsafe
         if: ${{ always() && steps.build.outcome == 'success' }}
         run: |
           set -euo pipefail
-          source_dir="$RUNNER_TEMP/twrp/out/target/product/guacamole/recovery/root/system/bin"
-          destination="$RUNNER_TEMP/guacamole-h40-v51-compiled-binaries-failsafe"
+          source_root="$RUNNER_TEMP/twrp/out/target/product/guacamole/recovery/root/system"
+          destination="$RUNNER_TEMP/guacamole-h40-v52-compiled-payload-failsafe"
           test ! -e "$destination"
-          mkdir -p "$destination"
-          for name in recovery oplus_h40_credential_helper keystore2; do
-            test -x "$source_dir/$name"
-            install -m 0755 "$source_dir/$name" "$destination/$name"
+          mkdir -p "$destination/system/bin" "$destination/system/lib64"
+          test -x "$source_root/bin/recovery"
+          install -m 0755 "$source_root/bin/recovery" "$destination/system/bin/recovery"
+          for name in oplus_h40_credential_helper keystore2; do
+            if test -x "$source_root/bin/$name"; then
+              install -m 0755 "$source_root/bin/$name" "$destination/system/bin/$name"
+            fi
           done
+          test -f "$source_root/lib64/libbinder.so"
+          install -m 0644 "$source_root/lib64/libbinder.so" \
+            "$destination/system/lib64/libbinder.so"
+          if test -f "$source_root/lib64/libbinder_ndk.so"; then
+            install -m 0644 "$source_root/lib64/libbinder_ndk.so" \
+              "$destination/system/lib64/libbinder_ndk.so"
+          fi
+          if test -x "$source_root/bin/linker64"; then
+            install -m 0755 "$source_root/bin/linker64" "$destination/system/bin/linker64"
+          fi
           (
             cd "$destination"
-            sha256sum keystore2 oplus_h40_credential_helper recovery > SHA256SUMS
+            find system -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS
           )
 
-      - name: Upload compiled V5.1 binaries failsafe
+      - name: Upload compiled V5.2 payload failsafe
         if: ${{ always() && steps.compiled_failsafe.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
-          name: guacamole-h40-v51-compiled-binaries-failsafe
+          name: guacamole-h40-v52-compiled-payload-failsafe
           if-no-files-found: error
-          path: ${{ runner.temp }}/guacamole-h40-v51-compiled-binaries-failsafe/
+          path: ${{ runner.temp }}/guacamole-h40-v52-compiled-payload-failsafe/
 
       - name: Build matching recovery linker for private runtime
         id: runtime_linker
@@ -782,7 +841,7 @@ jobs:
           test -x \
             "$RUNNER_TEMP/twrp/out/target/product/guacamole/recovery/root/system/bin/linker64"
 
-      - name: Package V5.1 runtime and private keystore2 closure
+      - name: Package V5.2 runtime and private keystore2 closure
         id: runtime_package
         if: ${{ always() && steps.build.outcome == 'success' && steps.runtime_linker.outcome == 'success' }}
         run: |
@@ -796,7 +855,7 @@ jobs:
           test -x "$recovery_root/system/bin/keystore2"
           test -x "$recovery_root/system/bin/linker64"
 
-          payload="$GITHUB_WORKSPACE/guacamole-h40-v51-runtime-payload"
+          payload="$GITHUB_WORKSPACE/guacamole-h40-v52-runtime-payload"
           mkdir -p "$payload"
           install -m 0755 "$binary" "$payload/recovery"
           install -m 0755 "$helper" "$payload/oplus_h40_credential_helper"
@@ -805,7 +864,7 @@ jobs:
             --output "$payload/keystore2-runtime" \
             --source-date-epoch 0
           cat > "$payload/INSTALL-MANIFEST.txt" <<'EOF'
-          guacamole H.40 V5.1 runtime payload
+          guacamole H.40 V5.2 runtime payload
 
           recovery
             artifact mode: 0755
@@ -821,6 +880,9 @@ jobs:
             same-build private linker and exact recursive DT_NEEDED closure
             apply install-root paths and the merge-only context-shim operations
             require companion marker H40_RECOVERY_KEYSTORE2_PERMISSION_SHIM_V51
+            require private libbinder marker H40_RECOVERY_BINDER_STABILITY_V0_V52
+            bridge SDK30 raw stability only on kernel Binder; keep Binder RPC packed
+            preserve stock /system/lib64/libbinder.so byte-for-byte
             preserve all unrelated stock SELinux context lines
 
           Final repack must resolve the helper's complete dependency closure only against
@@ -831,36 +893,36 @@ jobs:
           (
             cd "$GITHUB_WORKSPACE"
             tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
-              -czf guacamole-h40-v51-runtime-payload.tar.gz \
-              guacamole-h40-v51-runtime-payload
+              -czf guacamole-h40-v52-runtime-payload.tar.gz \
+              guacamole-h40-v52-runtime-payload
           )
-          sha256sum "$GITHUB_WORKSPACE/guacamole-h40-v51-runtime-payload.tar.gz" \
-            | tee "$GITHUB_WORKSPACE/guacamole-h40-v51-runtime-payload.tar.gz.sha256"
-          tar -tvzf "$GITHUB_WORKSPACE/guacamole-h40-v51-runtime-payload.tar.gz" \
-            | tee "$GITHUB_WORKSPACE/guacamole-h40-v51-runtime-payload.files"
-          grep -Eq '^-rwxr-xr-x .* guacamole-h40-v51-runtime-payload/recovery$' \
-            "$GITHUB_WORKSPACE/guacamole-h40-v51-runtime-payload.files"
-          grep -Eq '^-rwxr-xr-x .* guacamole-h40-v51-runtime-payload/oplus_h40_credential_helper$' \
-            "$GITHUB_WORKSPACE/guacamole-h40-v51-runtime-payload.files"
-          grep -Eq '^-rwxr-xr-x .* guacamole-h40-v51-runtime-payload/keystore2-runtime/install-root/system/tw/bin/keystore2$' \
-            "$GITHUB_WORKSPACE/guacamole-h40-v51-runtime-payload.files"
-          grep -Eq '^-rw-r--r-- .* guacamole-h40-v51-runtime-payload/keystore2-runtime/MANIFEST.json$' \
-            "$GITHUB_WORKSPACE/guacamole-h40-v51-runtime-payload.files"
+          sha256sum "$GITHUB_WORKSPACE/guacamole-h40-v52-runtime-payload.tar.gz" \
+            | tee "$GITHUB_WORKSPACE/guacamole-h40-v52-runtime-payload.tar.gz.sha256"
+          tar -tvzf "$GITHUB_WORKSPACE/guacamole-h40-v52-runtime-payload.tar.gz" \
+            | tee "$GITHUB_WORKSPACE/guacamole-h40-v52-runtime-payload.files"
+          grep -Eq '^-rwxr-xr-x .* guacamole-h40-v52-runtime-payload/recovery$' \
+            "$GITHUB_WORKSPACE/guacamole-h40-v52-runtime-payload.files"
+          grep -Eq '^-rwxr-xr-x .* guacamole-h40-v52-runtime-payload/oplus_h40_credential_helper$' \
+            "$GITHUB_WORKSPACE/guacamole-h40-v52-runtime-payload.files"
+          grep -Eq '^-rwxr-xr-x .* guacamole-h40-v52-runtime-payload/keystore2-runtime/install-root/system/tw/bin/keystore2$' \
+            "$GITHUB_WORKSPACE/guacamole-h40-v52-runtime-payload.files"
+          grep -Eq '^-rw-r--r-- .* guacamole-h40-v52-runtime-payload/keystore2-runtime/MANIFEST.json$' \
+            "$GITHUB_WORKSPACE/guacamole-h40-v52-runtime-payload.files"
 
-      - name: Upload successfully packaged V5.1 runtime
-        if: ${{ always() && steps.build.outcome == 'success' && hashFiles('guacamole-h40-v51-runtime-payload.tar.gz') != '' }}
+      - name: Upload successfully packaged V5.2 runtime
+        if: ${{ always() && steps.build.outcome == 'success' && hashFiles('guacamole-h40-v52-runtime-payload.tar.gz') != '' }}
         uses: actions/upload-artifact@v4
         with:
-          name: guacamole-h40-v51-parent-keystorage-runtime
+          name: guacamole-h40-v52-binder-compat-runtime
           if-no-files-found: error
           path: |
-            guacamole-h40-v51-runtime-payload.tar.gz
-            guacamole-h40-v51-runtime-payload.tar.gz.sha256
-            guacamole-h40-v51-runtime-payload/INSTALL-MANIFEST.txt
-            guacamole-h40-v51-runtime-payload/keystore2-runtime/MANIFEST.json
-            guacamole-h40-v51-runtime-payload/keystore2-runtime/SHA256SUMS
+            guacamole-h40-v52-runtime-payload.tar.gz
+            guacamole-h40-v52-runtime-payload.tar.gz.sha256
+            guacamole-h40-v52-runtime-payload/INSTALL-MANIFEST.txt
+            guacamole-h40-v52-runtime-payload/keystore2-runtime/MANIFEST.json
+            guacamole-h40-v52-runtime-payload/keystore2-runtime/SHA256SUMS
 
-      - name: Verify V5.1 ELF and stock-runtime helper contract
+      - name: Verify V5.2 ELF, Binder bridge, and stock-runtime helper contract
         id: elf_gate
         if: ${{ always() && steps.build.outcome == 'success' }}
         run: |
@@ -869,9 +931,11 @@ jobs:
           binary="$recovery_root/system/bin/recovery"
           helper="$recovery_root/system/bin/oplus_h40_credential_helper"
           keystore2="$recovery_root/system/bin/keystore2"
+          libbinder="$recovery_root/system/lib64/libbinder.so"
           test -x "$binary"
           test -x "$helper"
           test -x "$keystore2"
+          test -f "$libbinder"
           strings -a "$binary" > "$GITHUB_WORKSPACE/recovery.strings"
           readelf --file-header --wide "$binary" > "$GITHUB_WORKSPACE/recovery.header"
           readelf --dynamic --wide "$binary" > "$GITHUB_WORKSPACE/recovery.dynamic"
@@ -887,6 +951,16 @@ jobs:
             > "$GITHUB_WORKSPACE/credential-helper.dt-needed"
           strings -a "$keystore2" > "$GITHUB_WORKSPACE/keystore2.strings"
           readelf --file-header --wide "$keystore2" > "$GITHUB_WORKSPACE/keystore2.header"
+          strings -a "$libbinder" > "$GITHUB_WORKSPACE/libbinder-v52.strings"
+
+          if ! grep -Fq 'H40_RECOVERY_BINDER_STABILITY_V0_V52' \
+              "$GITHUB_WORKSPACE/libbinder-v52.strings"; then
+            echo 'missing SDK30 Binder stability bridge in private libbinder' >&2
+            exit 1
+          fi
+          libbinder_sha256=$(sha256sum "$libbinder" | awk '{print $1}')
+          test "$libbinder_sha256" != \
+            '3c5e1682f1fcf1a9c064decd2df5a0b30b5756a5b67c5c1d47884e3f1140ba56'
 
           for marker in \
             '[H40 KMCOMPAT] constructor: enumerating Keymaster 4.x devices' \
@@ -1039,15 +1113,20 @@ jobs:
             echo 'helper contains a forbidden private-runtime path' >&2
             exit 1
           fi
-          sha256sum "$binary" | tee "$GITHUB_WORKSPACE/recovery-v51-parent-keystorage.sha256"
-          sha256sum "$helper" | tee "$GITHUB_WORKSPACE/credential-helper-v51.sha256"
-          sha256sum "$keystore2" | tee "$GITHUB_WORKSPACE/keystore2-v51.sha256"
+          sha256sum "$binary" | tee "$GITHUB_WORKSPACE/recovery-v52-binder-compat.sha256"
+          sha256sum "$helper" | tee "$GITHUB_WORKSPACE/credential-helper-v52.sha256"
+          sha256sum "$keystore2" | tee "$GITHUB_WORKSPACE/keystore2-v52.sha256"
+          sha256sum "$libbinder" | tee "$GITHUB_WORKSPACE/libbinder-v52.sha256"
           {
             echo 'result=pass'
-            echo 'adapter_version=v51-parent-keystorage'
+            echo 'adapter_version=v52-binder-compat'
             echo 'recovery_verifier_symbol=absent'
             echo 'helper_verifier_symbol=present'
             echo 'keystore2_recovery_permission_shim=present'
+            echo 'binder_kernel_wire=SDK30_raw_levels'
+            echo 'binder_rpc_wire=A12.1_packed_category'
+            echo 'private_libbinder_bridge=present'
+            echo 'stock_libbinder_action=preserve-byte-for-byte'
             echo 'recovery_interpreter=private_runtime_repacked_later'
             echo 'helper_interpreter=/system/bin/linker64'
             echo 'helper_binary_uploaded=true'
@@ -1094,22 +1173,22 @@ jobs:
           (
             cd "$recovery_root"
             find twres -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
-          ) | tee "$GITHUB_WORKSPACE/guacamole-h40-v51-twres.sha256"
+          ) | tee "$GITHUB_WORKSPACE/guacamole-h40-v52-twres.sha256"
           tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
-            -czf "$GITHUB_WORKSPACE/guacamole-h40-v51-twres.tar.gz" \
+            -czf "$GITHUB_WORKSPACE/guacamole-h40-v52-twres.tar.gz" \
             -C "$recovery_root" twres
-          tar -tzf "$GITHUB_WORKSPACE/guacamole-h40-v51-twres.tar.gz" \
-            > "$GITHUB_WORKSPACE/guacamole-h40-v51-twres.files"
+          tar -tzf "$GITHUB_WORKSPACE/guacamole-h40-v52-twres.tar.gz" \
+            > "$GITHUB_WORKSPACE/guacamole-h40-v52-twres.files"
           grep -Fxq 'twres/languages/zh_CN.xml' \
-            "$GITHUB_WORKSPACE/guacamole-h40-v51-twres.files"
+            "$GITHUB_WORKSPACE/guacamole-h40-v52-twres.files"
           grep -Fxq 'twres/languages/zh_TW.xml' \
-            "$GITHUB_WORKSPACE/guacamole-h40-v51-twres.files"
+            "$GITHUB_WORKSPACE/guacamole-h40-v52-twres.files"
 
-      - name: Upload V5.1 diagnostics
+      - name: Upload V5.2 diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: guacamole-h40-v51-parent-keystorage-diagnostics
+          name: guacamole-h40-v52-binder-compat-diagnostics
           if-no-files-found: warn
           path: |
             build.log
@@ -1117,34 +1196,38 @@ jobs:
             recovery-diffstat.txt
             vold-diffstat.txt
             security-diffstat.txt
+            native-diffstat.txt
             vold-v51-parent-keystorage.patch
             recovery-v51-parent-keystorage.patch
             security-v51-keystore-policy.patch
+            native-v52-binder-v0.patch
             recovery.strings
             recovery.header
             recovery.dynamic
             recovery.dt-needed
-            recovery-v51-parent-keystorage.sha256
+            recovery-v52-binder-compat.sha256
             credential-helper.strings
             credential-helper.header
             credential-helper.program-headers
             credential-helper.dynamic
             credential-helper.dt-needed
-            credential-helper-v51.sha256
+            credential-helper-v52.sha256
             keystore2.strings
             keystore2.header
-            keystore2-v51.sha256
-            guacamole-h40-v51-runtime-payload.files
+            keystore2-v52.sha256
+            libbinder-v52.strings
+            libbinder-v52.sha256
+            guacamole-h40-v52-runtime-payload.files
             h40-adapter-verification.txt
             linker-recovery-build.log
 
-      - name: Upload V5.1 TWRP resources
+      - name: Upload V5.2 TWRP resources
         if: ${{ always() && steps.build.outcome == 'success' && steps.twres_gate.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
-          name: guacamole-h40-v51-twres
+          name: guacamole-h40-v52-twres
           if-no-files-found: error
           path: |
-            guacamole-h40-v51-twres.tar.gz
-            guacamole-h40-v51-twres.files
-            guacamole-h40-v51-twres.sha256
+            guacamole-h40-v52-twres.tar.gz
+            guacamole-h40-v52-twres.files
+            guacamole-h40-v52-twres.sha256

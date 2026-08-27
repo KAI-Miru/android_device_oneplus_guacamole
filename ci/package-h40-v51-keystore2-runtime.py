@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Package keystore2 as an isolated recovery runtime.
+"""Package V5.2 keystore2 as an isolated recovery runtime.
+
+The historical filename is retained so existing workflow links remain valid.
 
 The input is a built recovery root.  The output is deliberately split into:
 
@@ -41,11 +43,17 @@ SERVICE_CONTEXT_TARGET = "system/etc/selinux/plat_service_contexts"
 KEY_CONTEXT_TARGET = "system/etc/selinux/plat_keystore2_key_contexts"
 COMPANION_PERMISSION_PATCH = "H40_RECOVERY_KEYSTORE2_PERMISSION_SHIM_V51"
 PINNED_KEYSTORE2_SOURCE_COMMIT = "14737db1429b8eebc15568bc748b2cd79ccad5c2"
+BINDER_COMPATIBILITY_MARKER = "H40_RECOVERY_BINDER_STABILITY_V0_V52"
+PINNED_FRAMEWORKS_NATIVE_COMMIT = "89c808424fbce9e40c0d4e0d1920b3c64a191b7f"
+UNPATCHED_V51_LIBBINDER_SHA256 = (
+    "3c5e1682f1fcf1a9c064decd2df5a0b30b5756a5b67c5c1d47884e3f1140ba56"
+)
 
 KEYSTORE2_BINDER_SERVICES = (
     "android.system.keystore2.IKeystoreService/default",
     "android.security.apc",
     "android.security.authorization",
+    "android.security.compat",
     "android.security.metrics",
     "android.security.remoteprovisioning",
     "android.security.maintenance",
@@ -104,7 +112,7 @@ service keystore2 /system/tw/bin/keystore2 /tmp/misc/keystore
     seclabel u:r:recovery:s0
 """
 
-TOP_README = f"""H.40 V5.1 private keystore2 runtime
+TOP_README = f"""H.40 V5.2 private keystore2 runtime
 
 Copy files below install-root to their corresponding absolute paths.  Apply the
 two context-shim fragments using the exact merge operations in MANIFEST.json;
@@ -119,7 +127,10 @@ Integration preconditions:
    u:r:recovery:s0; reference mappings may not exist in the stock policy.
 4. Merge the VINTF fragment only when the active manifest does not already
    declare android.system.keystore2.IKeystoreService/default.
-5. The context shim requires source marker {COMPANION_PERMISSION_PATCH}; stock
+5. Private libbinder must contain {BINDER_COMPATIBILITY_MARKER} from pinned
+   frameworks/native {PINNED_FRAMEWORKS_NATIVE_COMMIT}; never replace the stock
+   /system/lib64/libbinder.so.
+6. The context shim requires source marker {COMPANION_PERMISSION_PATCH}; stock
    deny_unknown makes the absent keystore2_key class fail even when every label
    type exists.
 """
@@ -130,7 +141,7 @@ These are narrowly filtered lines copied from the recovery build input.  They
 help audit Binder/service/key context expectations, but they are not proof that
 the stock ColorOS recovery policy defines the same types or permits the same
 operations.  Installing these text files without the matching compiled policy
-can make init/service-manager labeling fail.  V5.1 therefore does not place any
+can make init/service-manager labeling fail.  V5.2 therefore does not place any
 of them below install-root and does not assert new stock-policy labels.
 """
 
@@ -150,7 +161,7 @@ The installer must preserve every unrelated stock line and apply only the exact
 names below.  Both targets have mode 0644.
 
 Service fragment target: {SERVICE_CONTEXT_TARGET}
-Operation: replace conflicting entries for the seven exact names, then insert
+Operation: replace conflicting entries for the eight exact names, then insert
 the fragment before the wildcard fallback.  Preserve every other stock entry.
 
 Key fragment target: {KEY_CONTEXT_TARGET}
@@ -753,6 +764,31 @@ def verify_package(output: Path) -> dict[str, object]:
     if extras:
         fail(f"private library directory has non-closure files: {extras}")
 
+    private_libbinder_path = library_root / "libbinder.so"
+    if not private_libbinder_path.is_file():
+        fail("packaged private closure does not contain libbinder.so")
+    private_libbinder_data = private_libbinder_path.read_bytes()
+    private_libbinder_sha256 = sha256(private_libbinder_data)
+    if BINDER_COMPATIBILITY_MARKER.encode("ascii") not in private_libbinder_data:
+        fail("packaged private libbinder lacks the V5.2 SDK30 stability bridge")
+    if private_libbinder_sha256 == UNPATCHED_V51_LIBBINDER_SHA256:
+        fail("packaged private libbinder is still the unpatched V5.1 binary")
+    binder_manifest = manifest.get("runtime", {}).get("binder_compatibility")
+    if not isinstance(binder_manifest, dict):
+        fail("manifest lacks V5.2 Binder compatibility attestation")
+    if (
+        binder_manifest.get("marker") != BINDER_COMPATIBILITY_MARKER
+        or binder_manifest.get("pinned_frameworks_native_commit")
+        != PINNED_FRAMEWORKS_NATIVE_COMMIT
+        or binder_manifest.get("private_libbinder_sha256") != private_libbinder_sha256
+        or binder_manifest.get("wire_format")
+        != "SDK30 raw stability values on kernel Binder only"
+        or binder_manifest.get("binder_rpc_format")
+        != "Android 12.1 packed Category preserved"
+        or binder_manifest.get("stock_libbinder_action") != "preserve-byte-for-byte"
+    ):
+        fail("manifest V5.2 Binder compatibility attestation is not exact")
+
     service_path = install_root / PurePosixPath(TARGET_INIT)
     verify_service(service_path.read_text(encoding="utf-8"))
     validate_vintf((install_root / PurePosixPath(TARGET_VINTF)).read_bytes())
@@ -776,6 +812,8 @@ def verify_package(output: Path) -> dict[str, object]:
         "libraries": len(selected),
         "bytes": sum(int(row["bytes"]) for row in actual_rows),
         "keystore2_sha256": file_sha256(executable_path),
+        "private_libbinder_sha256": private_libbinder_sha256,
+        "binder_stability_v0_bridge": True,
         "all_recursive_dependencies_present": True,
         "no_extra_private_libraries": True,
         "service_disabled": True,
@@ -819,6 +857,15 @@ def build_package(recovery_root: Path, output: Path, epoch: int) -> dict[str, ob
         write_file(install_root / PurePosixPath(TARGET_LINKER), linker_data, 0o755)
 
         selected = resolve_closure(recovery_root, executable)
+        private_libbinder = selected.get("libbinder.so")
+        if private_libbinder is None:
+            fail("keystore2 private closure does not contain libbinder.so")
+        private_libbinder_data = private_libbinder.source_path.read_bytes()
+        private_libbinder_sha256 = sha256(private_libbinder_data)
+        if BINDER_COMPATIBILITY_MARKER.encode("ascii") not in private_libbinder_data:
+            fail("built private libbinder lacks the V5.2 SDK30 stability bridge")
+        if private_libbinder_sha256 == UNPATCHED_V51_LIBBINDER_SHA256:
+            fail("built private libbinder still matches the unpatched V5.1 binary")
         library_rows = []
         for name in sorted(selected):
             item = selected[name]
@@ -849,7 +896,7 @@ def build_package(recovery_root: Path, output: Path, epoch: int) -> dict[str, ob
 
         manifest = {
             "format": 1,
-            "name": "guacamole-h40-v51-private-keystore2-runtime",
+            "name": "guacamole-h40-v52-private-keystore2-runtime",
             "source_layout": "built recovery/root",
             "runtime": {
                 "executable": {
@@ -867,6 +914,14 @@ def build_package(recovery_root: Path, output: Path, epoch: int) -> dict[str, ob
                     "interpreter": None,
                 },
                 "libraries": library_rows,
+                "binder_compatibility": {
+                    "marker": BINDER_COMPATIBILITY_MARKER,
+                    "pinned_frameworks_native_commit": PINNED_FRAMEWORKS_NATIVE_COMMIT,
+                    "private_libbinder_sha256": private_libbinder_sha256,
+                    "wire_format": "SDK30 raw stability values on kernel Binder only",
+                    "binder_rpc_format": "Android 12.1 packed Category preserved",
+                    "stock_libbinder_action": "preserve-byte-for-byte",
+                },
                 "init_service": {
                     "target": TARGET_INIT,
                     "name": "keystore2",
@@ -893,6 +948,8 @@ def build_package(recovery_root: Path, output: Path, epoch: int) -> dict[str, ob
                 "stock compiled sepolicy and context files remain authoritative",
                 "VINTF declaration is merged without creating a duplicate HAL instance",
                 f"context shim is installed only with companion marker {COMPANION_PERMISSION_PATCH}",
+                f"private libbinder contains marker {BINDER_COMPATIBILITY_MARKER}",
+                "stock /system/lib64/libbinder.so is preserved byte-for-byte",
             ],
             "known_risks": [
                 "The daemon comes from the TWRP 12.1 build, while the tested installed port reports Android 14; persistent.sqlite compatibility remains device-test-gated.",
@@ -909,6 +966,8 @@ def build_package(recovery_root: Path, output: Path, epoch: int) -> dict[str, ob
                 "reference_contexts_non_installable": True,
                 "minimal_stock_type_context_shim": True,
                 "context_shim_companion_patch_mandatory": True,
+                "binder_stability_v0_bridge": True,
+                "stock_libbinder_preservation_mandatory": True,
             },
         }
         inventory = listed_files(temp_path, {"MANIFEST.json", "SHA256SUMS"})
