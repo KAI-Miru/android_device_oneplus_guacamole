@@ -1,8 +1,0 @@
-id=32656987549
-run_number=6
-head_sha=061d2151726dcc841362dfa758bad88942fa7714
-status=in_progress
-conclusion=None
-html_url=https://github.com/KAI-Miru/android_device_oneplus_guacamole/actions/runs/32656987549
-created_at=2026-08-23T18:06:37Z
-updated_at=2026-08-23T18:06:41Z

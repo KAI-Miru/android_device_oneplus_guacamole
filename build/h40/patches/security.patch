@@ -1,0 +1,194 @@
+diff --git a/keystore2/src/utils.rs b/keystore2/src/utils.rs
+index a110c64..e4abd9a 100644
+--- a/keystore2/src/utils.rs
++++ b/keystore2/src/utils.rs
+@@ -27,7 +27,7 @@ use android_security_apc::aidl::android::security::apc::{
+     ResponseCode::ResponseCode as ApcResponseCode,
+ };
+ use android_system_keystore2::aidl::android::system::keystore2::{
+-    Authorization::Authorization, KeyDescriptor::KeyDescriptor,
++    Authorization::Authorization, Domain::Domain, KeyDescriptor::KeyDescriptor,
+ };
+ use anyhow::{anyhow, Context};
+ use binder::{FromIBinder, SpIBinder, ThreadState};
+@@ -38,17 +38,54 @@ use keystore2_apc_compat::{
+ };
+ use std::sync::Mutex;
+ 
++const H40_RECOVERY_PERMISSION_MARKER: &str = "H40_RECOVERY_KEYSTORE2_PERMISSION_SHIM_V51";
++const H40_RECOVERY_CALLER_SID: &[u8] = b"u:r:recovery:s0";
++const H40_LOCKSETTINGS_NAMESPACE: i64 = 103;
++
++fn is_h40_recovery_caller(calling_uid: u32, calling_sid: &std::ffi::CStr) -> bool {
++    calling_uid == 0 && calling_sid.to_bytes() == H40_RECOVERY_CALLER_SID
++}
++
++fn allow_h40_recovery_keystore_permission(
++    calling_uid: u32,
++    calling_sid: &std::ffi::CStr,
++    perm: KeystorePerm,
++) -> bool {
++    is_h40_recovery_caller(calling_uid, calling_sid) && perm == KeystorePerm::add_auth()
++}
++
++fn allow_h40_recovery_key_permission(
++    calling_uid: u32,
++    calling_sid: &std::ffi::CStr,
++    perm: KeyPerm,
++    key: &KeyDescriptor,
++) -> bool {
++    is_h40_recovery_caller(calling_uid, calling_sid)
++        && key.domain == Domain::SELINUX
++        && key.nspace == H40_LOCKSETTINGS_NAMESPACE
++        && (perm == KeyPerm::get_info() || perm == KeyPerm::use_())
++}
++
+ /// This function uses its namesake in the permission module and in
+ /// combination with with_calling_sid from the binder crate to check
+ /// if the caller has the given keystore permission.
+ pub fn check_keystore_permission(perm: KeystorePerm) -> anyhow::Result<()> {
+     ThreadState::with_calling_sid(|calling_sid| {
+-        permission::check_keystore_permission(
+-            &calling_sid.ok_or_else(Error::sys).context(
+-                "In check_keystore_permission: Cannot check permission without calling_sid.",
+-            )?,
++        let calling_sid = calling_sid.ok_or_else(Error::sys).context(
++            "In check_keystore_permission: Cannot check permission without calling_sid.",
++        )?;
++        if allow_h40_recovery_keystore_permission(
++            ThreadState::get_calling_uid(),
++            calling_sid,
+             perm,
+-        )
++        ) {
++            log::warn!(
++                "{}: allowing add_auth for root recovery Binder caller",
++                H40_RECOVERY_PERMISSION_MARKER
++            );
++            return Ok(());
++        }
++        permission::check_keystore_permission(calling_sid, perm)
+     })
+ }
+ 
+@@ -76,15 +113,18 @@ pub fn check_key_permission(
+     access_vector: &Option<KeyPermSet>,
+ ) -> anyhow::Result<()> {
+     ThreadState::with_calling_sid(|calling_sid| {
+-        permission::check_key_permission(
+-            ThreadState::get_calling_uid(),
+-            &calling_sid
+-                .ok_or_else(Error::sys)
+-                .context("In check_key_permission: Cannot check permission without calling_sid.")?,
+-            perm,
+-            key,
+-            access_vector,
+-        )
++        let calling_uid = ThreadState::get_calling_uid();
++        let calling_sid = calling_sid
++            .ok_or_else(Error::sys)
++            .context("In check_key_permission: Cannot check permission without calling_sid.")?;
++        if allow_h40_recovery_key_permission(calling_uid, calling_sid, perm, key) {
++            log::warn!(
++                "{}: allowing locksettings key access for root recovery Binder caller",
++                H40_RECOVERY_PERMISSION_MARKER
++            );
++            return Ok(());
++        }
++        permission::check_key_permission(calling_uid, calling_sid, perm, key, access_vector)
+     })
+ }
+ 
+@@ -299,4 +339,92 @@ mod tests {
+             }
+         })
+     }
++
++    #[test]
++    fn h40_recovery_permission_shim_is_exact_and_narrow() {
++        let recovery = std::ffi::CStr::from_bytes_with_nul(b"u:r:recovery:s0\0").unwrap();
++        let near_match = std::ffi::CStr::from_bytes_with_nul(b"u:r:recovery:s0x\0").unwrap();
++        let locksettings = KeyDescriptor {
++            domain: Domain::SELINUX,
++            nspace: H40_LOCKSETTINGS_NAMESPACE,
++            alias: None,
++            blob: None,
++        };
++        let wrong_namespace = KeyDescriptor {
++            domain: Domain::SELINUX,
++            nspace: H40_LOCKSETTINGS_NAMESPACE + 1,
++            alias: None,
++            blob: None,
++        };
++        let wrong_domain = KeyDescriptor {
++            domain: Domain::APP,
++            nspace: H40_LOCKSETTINGS_NAMESPACE,
++            alias: None,
++            blob: None,
++        };
++
++        assert!(allow_h40_recovery_keystore_permission(
++            0,
++            recovery,
++            KeystorePerm::add_auth()
++        ));
++        assert!(!allow_h40_recovery_keystore_permission(
++            0,
++            recovery,
++            KeystorePerm::reset()
++        ));
++        assert!(!allow_h40_recovery_keystore_permission(
++            1,
++            recovery,
++            KeystorePerm::add_auth()
++        ));
++        assert!(!allow_h40_recovery_keystore_permission(
++            0,
++            near_match,
++            KeystorePerm::add_auth()
++        ));
++
++        assert!(allow_h40_recovery_key_permission(
++            0,
++            recovery,
++            KeyPerm::get_info(),
++            &locksettings
++        ));
++        assert!(allow_h40_recovery_key_permission(
++            0,
++            recovery,
++            KeyPerm::use_(),
++            &locksettings
++        ));
++        assert!(!allow_h40_recovery_key_permission(
++            0,
++            recovery,
++            KeyPerm::req_forced_op(),
++            &locksettings
++        ));
++        assert!(!allow_h40_recovery_key_permission(
++            1,
++            recovery,
++            KeyPerm::use_(),
++            &locksettings
++        ));
++        assert!(!allow_h40_recovery_key_permission(
++            0,
++            near_match,
++            KeyPerm::use_(),
++            &locksettings
++        ));
++        assert!(!allow_h40_recovery_key_permission(
++            0,
++            recovery,
++            KeyPerm::use_(),
++            &wrong_namespace
++        ));
++        assert!(!allow_h40_recovery_key_permission(
++            0,
++            recovery,
++            KeyPerm::use_(),
++            &wrong_domain
++        ));
++    }
+ }

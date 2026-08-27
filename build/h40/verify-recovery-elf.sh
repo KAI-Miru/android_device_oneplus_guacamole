@@ -143,3 +143,4 @@ sha256sum "$recovery_elf" > "$report_dir/recovery-elf.sha256"
   echo "dt_needed_libdecrypt_recovery=absent"
   echo "binary_uploaded=false"
 } | tee "$report_dir/adapter-verification.txt"
+

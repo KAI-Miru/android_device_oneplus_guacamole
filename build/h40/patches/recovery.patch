@@ -1,0 +1,3075 @@
+diff --git a/Android.mk b/Android.mk
+index 383adca..c83b541 100644
+--- a/Android.mk
++++ b/Android.mk
+@@ -335,6 +335,13 @@ endif
+ ifeq ($(TW_INCLUDE_CRYPTO), true)
+     LOCAL_CFLAGS += -DTW_INCLUDE_CRYPTO -DUSE_FSCRYPT -Wno-macro-redefined
+     LOCAL_SHARED_LIBRARIES += libgpt_twrp
++    ifeq ($(TW_INCLUDE_OPLUS_H40_DECRYPT),true)
++        LOCAL_SRC_FILES += oplus_h40_decrypt.cpp oplus_h40_credential_client.cpp
++        LOCAL_CFLAGS += -DTW_INCLUDE_OPLUS_H40_DECRYPT
++        LOCAL_REQUIRED_MODULES += oplus_h40_credential_helper
++        LOCAL_SHARED_LIBRARIES += libdl android.hardware.keymaster@4.0 libkeymaster4support
++        LOCAL_SHARED_LIBRARIES += android.hardware.keymaster@4.1 libkeymaster4_1support
++    endif
+     LOCAL_C_INCLUDES += external/boringssl/src/include bootable/recovery/crypto
+     TW_INCLUDE_CRYPTO_FBE := true
+     LOCAL_CFLAGS += -DTW_INCLUDE_FBE
+@@ -646,6 +653,21 @@ LOCAL_REQUIRED_MODULES += $(TWRP_REQUIRED_MODULES)
+ 
+ include $(BUILD_EXECUTABLE)
+ 
++ifeq ($(TW_INCLUDE_OPLUS_H40_DECRYPT),true)
++# H.40 V5.0 exact credential gate. This executable intentionally retains the
++# stock /system/bin linker namespace; hybrid repacking must not relocate it.
++include $(CLEAR_VARS)
++LOCAL_MODULE := oplus_h40_credential_helper
++LOCAL_MODULE_TAGS := optional
++LOCAL_SRC_FILES := oplus_h40_credential_helper.cpp
++LOCAL_MULTILIB := 64
++LOCAL_MODULE_PATH := $(TARGET_RECOVERY_ROOT_OUT)/system/bin
++LOCAL_SHARED_LIBRARIES := libc++ libdl liblog libkeyutils libcrypto
++LOCAL_CPPFLAGS := -Wall -Wextra -Werror -fno-exceptions -fno-rtti
++LOCAL_CLANG := true
++include $(BUILD_EXECUTABLE)
++endif
++
+ # Symlink for file_contexts
+ include $(CLEAR_VARS)
+ 
+diff --git a/oplus_h40_credential_client.cpp b/oplus_h40_credential_client.cpp
+new file mode 100644
+index 0000000..7c05201
+--- /dev/null
++++ b/oplus_h40_credential_client.cpp
+@@ -0,0 +1,611 @@
++#include "oplus_h40_credential_client.hpp"
++
++#include "oplus_h40_credential_protocol.hpp"
++
++#include <errno.h>
++#include <fcntl.h>
++#include <poll.h>
++#include <signal.h>
++#include <spawn.h>
++#include <sys/socket.h>
++#include <sys/wait.h>
++#include <time.h>
++#include <unistd.h>
++#include <string.h>
++
++#include <algorithm>
++#include <array>
++#include <climits>
++#include <cstdio>
++#include <cstdint>
++#include <cstring>
++#include <fstream>
++#include <iomanip>
++#include <limits>
++#include <string>
++#include <utility>
++#include <vector>
++
++#include "twcommon.h"
++
++namespace twrp {
++namespace oplus_h40 {
++namespace {
++
++namespace protocol = credential_protocol;
++
++constexpr int kSetupTimeoutMs = 30000;
++constexpr int kVerifyTimeoutMs = 60000;
++constexpr int kExitTimeoutMs = 5000;
++
++void SecureWipe(void* data, std::size_t size) {
++    volatile std::uint8_t* bytes = static_cast<volatile std::uint8_t*>(data);
++    while (size != 0) {
++        *bytes++ = 0;
++        --size;
++    }
++}
++
++class ScopedFd {
++  public:
++    explicit ScopedFd(int fd = -1) : fd_(fd) {}
++    ~ScopedFd() {
++        if (fd_ >= 0) close(fd_);
++    }
++    ScopedFd(const ScopedFd&) = delete;
++    ScopedFd& operator=(const ScopedFd&) = delete;
++    int get() const { return fd_; }
++    int release() {
++        const int fd = fd_;
++        fd_ = -1;
++        return fd;
++    }
++
++  private:
++    int fd_;
++};
++
++std::uint64_t MonotonicMilliseconds() {
++    struct timespec now = {};
++    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return 0;
++    return static_cast<std::uint64_t>(now.tv_sec) * 1000ULL +
++           static_cast<std::uint64_t>(now.tv_nsec) / 1000000ULL;
++}
++
++std::uint64_t MakeAttemptId() {
++    static std::uint32_t sequence = 0;
++    ++sequence;
++    struct timespec now = {};
++    clock_gettime(CLOCK_MONOTONIC, &now);
++    return (static_cast<std::uint64_t>(getpid()) << 32) ^
++           static_cast<std::uint64_t>(now.tv_nsec) ^
++           (static_cast<std::uint64_t>(sequence) << 16);
++}
++
++bool SendPacket(int fd, const void* data, std::size_t size) {
++    const ssize_t sent = send(fd, data, size, MSG_NOSIGNAL);
++    return sent == static_cast<ssize_t>(size);
++}
++
++enum class ReceiveStatus {
++    kPacket,
++    kTimeout,
++    kClosed,
++    kError,
++};
++
++ReceiveStatus ReceivePacket(int fd, std::uint64_t deadline_ms,
++                            std::array<std::uint8_t, sizeof(protocol::CrashFrame)>* packet,
++                            std::size_t* packet_size) {
++    while (true) {
++        const std::uint64_t now = MonotonicMilliseconds();
++        if (now >= deadline_ms) return ReceiveStatus::kTimeout;
++        const std::uint64_t remaining = deadline_ms - now;
++        const int timeout = remaining > static_cast<std::uint64_t>(INT_MAX)
++                                ? INT_MAX
++                                : static_cast<int>(remaining);
++
++        struct pollfd descriptor = {};
++        descriptor.fd = fd;
++        descriptor.events = POLLIN | POLLHUP | POLLERR;
++        const int poll_result = poll(&descriptor, 1, timeout);
++        if (poll_result < 0) {
++            if (errno == EINTR) continue;
++            return ReceiveStatus::kError;
++        }
++        if (poll_result == 0) return ReceiveStatus::kTimeout;
++        if ((descriptor.revents & POLLIN) != 0) {
++            const ssize_t received = recv(fd, packet->data(), packet->size(), MSG_TRUNC);
++            if (received < 0) {
++                if (errno == EINTR) continue;
++                return ReceiveStatus::kError;
++            }
++            if (received == 0) return ReceiveStatus::kClosed;
++            *packet_size = static_cast<std::size_t>(received);
++            return ReceiveStatus::kPacket;
++        }
++        if ((descriptor.revents & (POLLHUP | POLLERR | POLLNVAL)) != 0) {
++            return ReceiveStatus::kClosed;
++        }
++    }
++}
++
++bool ValidateHeader(const protocol::FrameHeader& header, std::size_t packet_size,
++                    std::uint64_t attempt_id) {
++    return header.magic == protocol::kMagic && header.version == protocol::kVersion &&
++           header.frame_size == packet_size && header.reserved == 0 &&
++           header.attempt_id == attempt_id;
++}
++
++bool WaitForChild(pid_t pid, int timeout_ms, int* status) {
++    const std::uint64_t deadline = MonotonicMilliseconds() + timeout_ms;
++    while (MonotonicMilliseconds() < deadline) {
++        const pid_t waited = waitpid(pid, status, WNOHANG);
++        if (waited == pid) return true;
++        if (waited < 0 && errno != EINTR) return false;
++        usleep(20000);
++    }
++    return false;
++}
++
++void KillAndReap(pid_t pid) {
++    if (pid <= 0) return;
++    if (kill(pid, SIGKILL) != 0 && errno != ESRCH) {
++        LOGERR("[H40 V50 HELPER] failed to kill helper pid=%d: %s\n", pid,
++               strerror(errno));
++    }
++    int status = 0;
++    if (!WaitForChild(pid, kExitTimeoutMs, &status)) {
++        LOGERR("[H40 V50 HELPER] helper pid=%d did not reap after SIGKILL; "
++               "continuing in fatal adapter state\n",
++               pid);
++    }
++}
++
++struct OemMapping {
++    std::uint64_t load_base = 0;
++    struct ExecutableInterval {
++        std::uint64_t start = 0;
++        std::uint64_t end = 0;
++    };
++    std::vector<ExecutableInterval> executable_intervals;
++};
++
++bool CaptureHelperMaps(pid_t pid, std::uint64_t attempt_id, OemMapping* oem_mapping) {
++    const std::string source = "/proc/" + std::to_string(pid) + "/maps";
++    std::ifstream input(source);
++    if (!input.is_open() || oem_mapping == nullptr) {
++        LOGERR("[H40 V50 HELPER] unable to inspect helper maps for attempt=%llu\n",
++               static_cast<unsigned long long>(attempt_id));
++        return false;
++    }
++    bool saw_oem = false;
++    bool saw_stock_libcxx = false;
++    bool saw_stock_libcrypto = false;
++    bool saw_helper = false;
++    bool saw_private_runtime = false;
++    std::uint64_t oem_start = std::numeric_limits<std::uint64_t>::max();
++    std::vector<OemMapping::ExecutableInterval> executable_intervals;
++    std::string line;
++    while (std::getline(input, line)) {
++        const bool is_oem =
++                line.find("/system/lib64/libdecrypt_recovery.so") != std::string::npos;
++        saw_oem = saw_oem || is_oem;
++        saw_stock_libcxx = saw_stock_libcxx ||
++                          line.find("/system/lib64/libc++.so") != std::string::npos;
++        saw_stock_libcrypto = saw_stock_libcrypto ||
++                              line.find("/system/lib64/libcrypto.so") !=
++                                      std::string::npos;
++        saw_helper = saw_helper ||
++                     line.find("/system/bin/oplus_h40_credential_helper") !=
++                             std::string::npos;
++        saw_private_runtime = saw_private_runtime ||
++                              line.find("/system/tw/") != std::string::npos;
++        if (is_oem) {
++            unsigned long long start = 0;
++            unsigned long long end = 0;
++            char permissions[5] = {};
++            if (std::sscanf(line.c_str(), "%llx-%llx %4s", &start, &end,
++                            permissions) != 3 || start >= end) {
++                LOGERR("[H40 V50 HELPER] malformed OEM map attempt=%llu\n",
++                       static_cast<unsigned long long>(attempt_id));
++                return false;
++            }
++            oem_start = std::min(oem_start, static_cast<std::uint64_t>(start));
++            if (strchr(permissions, 'x') != nullptr) {
++                executable_intervals.push_back(
++                        {static_cast<std::uint64_t>(start),
++                         static_cast<std::uint64_t>(end)});
++            }
++        }
++    }
++    if (!saw_oem || executable_intervals.empty() || !saw_stock_libcxx ||
++        !saw_stock_libcrypto || !saw_helper || saw_private_runtime ||
++        oem_start == std::numeric_limits<std::uint64_t>::max()) {
++        LOGERR("[H40 V50 HELPER] stock namespace proof failed attempt=%llu "
++               "helper=%d oem=%d executable=%d stockLibcxx=%d "
++               "stockLibcrypto=%d privateRuntime=%d\n",
++               static_cast<unsigned long long>(attempt_id), saw_helper, saw_oem,
++               !executable_intervals.empty(), saw_stock_libcxx, saw_stock_libcrypto,
++               saw_private_runtime);
++        return false;
++    }
++
++    std::sort(executable_intervals.begin(), executable_intervals.end(),
++              [](const OemMapping::ExecutableInterval& left,
++                 const OemMapping::ExecutableInterval& right) {
++                  return left.start < right.start;
++              });
++    std::uint64_t previous_end = 0;
++    for (const OemMapping::ExecutableInterval& interval : executable_intervals) {
++        if (interval.start < oem_start || interval.end <= interval.start ||
++            (previous_end != 0 && interval.start < previous_end)) {
++            LOGERR("[H40 V50 HELPER] invalid OEM executable-map layout attempt=%llu\n",
++                   static_cast<unsigned long long>(attempt_id));
++            return false;
++        }
++        previous_end = interval.end;
++    }
++    oem_mapping->load_base = oem_start;
++    oem_mapping->executable_intervals = std::move(executable_intervals);
++    LOGINFO("[H40 V50 HELPER] stock-runtime maps verified for attempt=%llu pid=%d\n",
++            static_cast<unsigned long long>(attempt_id), pid);
++    return true;
++}
++
++bool OffsetInOemExecutableMapping(std::uint64_t offset,
++                                  const OemMapping& mapping) {
++    if (mapping.load_base == 0 ||
++        offset > std::numeric_limits<std::uint64_t>::max() - mapping.load_base) {
++        return false;
++    }
++    const std::uint64_t address = mapping.load_base + offset;
++    for (const OemMapping::ExecutableInterval& interval :
++         mapping.executable_intervals) {
++        if (address >= interval.start && address < interval.end) return true;
++    }
++    return false;
++}
++
++void SaveCrashReport(const protocol::CrashFrame& crash, pid_t pid,
++                     const OemMapping& mapping) {
++    const bool pc_claimed =
++            (crash.address_flags & protocol::kCrashPcOemExecutable) != 0;
++    const bool pc_in_oem =
++            pc_claimed && OffsetInOemExecutableMapping(
++                                  crash.program_counter_offset, mapping);
++    const std::uint64_t pc_offset = pc_in_oem ? crash.program_counter_offset : 0;
++    const bool lr_claimed =
++            (crash.address_flags & protocol::kCrashLrOemExecutable) != 0;
++    const bool lr_in_oem =
++            lr_claimed && OffsetInOemExecutableMapping(
++                                  crash.link_register_offset, mapping);
++    const std::uint64_t lr_offset = lr_in_oem ? crash.link_register_offset : 0;
++
++    LOGERR("[H40 V50 CRASH] helper pid=%d tid=%u signal=%d code=%d stage=%u "
++           "pcInOem=%d pcOffset=0x%llx lrInOem=%d lrOffset=0x%llx\n",
++           pid, crash.crashing_tid, crash.signal_number, crash.signal_code, crash.stage,
++           pc_in_oem, static_cast<unsigned long long>(pc_offset), lr_in_oem,
++           static_cast<unsigned long long>(lr_offset));
++
++    std::ofstream report("/tmp/h40-credential-helper-crash.txt", std::ios::trunc);
++    if (!report.is_open()) return;
++    report << "attempt=" << std::dec << crash.header.attempt_id << " pid=" << pid
++           << " tid=" << crash.crashing_tid
++           << " signal=" << crash.signal_number << " code=" << crash.signal_code
++           << " stage=" << crash.stage << "\n";
++    report << "pc_in_oem=" << pc_in_oem;
++    if (pc_in_oem) report << " oem_offset=0x" << std::hex << pc_offset << std::dec;
++    report << "\n";
++    report << "lr_in_oem=" << lr_in_oem;
++    if (lr_in_oem) report << " oem_offset=0x" << std::hex << lr_offset << std::dec;
++    report << "\n";
++}
++
++bool IsReply(const std::array<std::uint8_t, sizeof(protocol::CrashFrame)>& packet,
++             std::size_t packet_size, std::uint64_t attempt_id,
++             protocol::ReplyFrame* reply) {
++    if (packet_size != sizeof(*reply)) return false;
++    memcpy(reply, packet.data(), sizeof(*reply));
++    return ValidateHeader(reply->header, packet_size, attempt_id) &&
++           reply->reserved == 0 &&
++           (reply->flags & ~protocol::kKnownReplyFlags) == 0;
++}
++
++bool IsCrash(const std::array<std::uint8_t, sizeof(protocol::CrashFrame)>& packet,
++             std::size_t packet_size, std::uint64_t attempt_id,
++             protocol::CrashFrame* crash) {
++    if (packet_size != sizeof(*crash)) return false;
++    memcpy(crash, packet.data(), sizeof(*crash));
++    return ValidateHeader(crash->header, packet_size, attempt_id) &&
++           crash->header.type ==
++                   static_cast<std::uint16_t>(protocol::FrameType::kCrashed) &&
++           crash->reserved == 0 &&
++           (crash->address_flags & ~protocol::kKnownCrashAddressFlags) == 0 &&
++           (((crash->address_flags & protocol::kCrashPcOemExecutable) != 0) ||
++            crash->program_counter_offset == 0) &&
++           (((crash->address_flags & protocol::kCrashLrOemExecutable) != 0) ||
++            crash->link_register_offset == 0);
++}
++
++}  // namespace
++
++IsolatedVerifyResult VerifyCredentialIsolated(const std::string& credential,
++                                               int expected_password_type) {
++    if (credential.empty() || credential.size() > protocol::kMaxCredentialBytes ||
++        expected_password_type < 1 || expected_password_type > 4) {
++        LOGERR("[H40 V50 HELPER] refusing malformed credential parameters\n");
++        return IsolatedVerifyResult::kFatalFailure;
++    }
++
++    unlink("/tmp/h40-credential-helper-crash.txt");
++
++    int sockets[2] = {-1, -1};
++    if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sockets) != 0) {
++        LOGERR("[H40 V50 HELPER] socketpair failed: %s\n", strerror(errno));
++        return IsolatedVerifyResult::kFatalFailure;
++    }
++    ScopedFd parent_socket(sockets[0]);
++    ScopedFd original_child_socket(sockets[1]);
++
++    const int child_socket = fcntl(original_child_socket.get(), F_DUPFD_CLOEXEC, 64);
++    if (child_socket < 0) {
++        LOGERR("[H40 V50 HELPER] child fd duplication failed: %s\n", strerror(errno));
++        return IsolatedVerifyResult::kFatalFailure;
++    }
++    ScopedFd spawned_socket(child_socket);
++
++    posix_spawn_file_actions_t actions;
++    int spawn_error = posix_spawn_file_actions_init(&actions);
++    if (spawn_error != 0) {
++        LOGERR("[H40 V50 HELPER] spawn action initialization failed: %s\n",
++               strerror(spawn_error));
++        return IsolatedVerifyResult::kFatalFailure;
++    }
++    spawn_error = posix_spawn_file_actions_adddup2(
++            &actions, spawned_socket.get(), protocol::kProtocolFd);
++    if (spawn_error == 0) {
++        spawn_error = posix_spawn_file_actions_addclose(&actions, spawned_socket.get());
++    }
++    if (spawn_error != 0) {
++        posix_spawn_file_actions_destroy(&actions);
++        LOGERR("[H40 V50 HELPER] spawn action setup failed: %s\n", strerror(spawn_error));
++        return IsolatedVerifyResult::kFatalFailure;
++    }
++
++    posix_spawnattr_t attributes;
++    spawn_error = posix_spawnattr_init(&attributes);
++    if (spawn_error != 0) {
++        posix_spawn_file_actions_destroy(&actions);
++        LOGERR("[H40 V50 HELPER] spawn attribute initialization failed: %s\n",
++               strerror(spawn_error));
++        return IsolatedVerifyResult::kFatalFailure;
++    }
++    sigset_t empty_signal_mask;
++    sigemptyset(&empty_signal_mask);
++    spawn_error = posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSIGMASK);
++    if (spawn_error == 0) {
++        spawn_error = posix_spawnattr_setsigmask(&attributes, &empty_signal_mask);
++    }
++    if (spawn_error != 0) {
++        posix_spawnattr_destroy(&attributes);
++        posix_spawn_file_actions_destroy(&actions);
++        LOGERR("[H40 V50 HELPER] spawn signal-mask setup failed: %s\n",
++               strerror(spawn_error));
++        return IsolatedVerifyResult::kFatalFailure;
++    }
++
++    char helper_path[] = "/system/bin/oplus_h40_credential_helper";
++    char* argv[] = {helper_path, nullptr};
++    char android_root[] = "ANDROID_ROOT=/system";
++    char android_data[] = "ANDROID_DATA=/data";
++    char path[] = "PATH=/system/bin";
++    char* environment[] = {android_root, android_data, path, nullptr};
++    pid_t pid = -1;
++    spawn_error = posix_spawn(&pid, protocol::kHelperPath, &actions, &attributes, argv,
++                               environment);
++    posix_spawnattr_destroy(&attributes);
++    posix_spawn_file_actions_destroy(&actions);
++    if (spawn_error != 0) {
++        LOGERR("[H40 V50 HELPER] posix_spawn failed: %s\n", strerror(spawn_error));
++        return IsolatedVerifyResult::kFatalFailure;
++    }
++    close(spawned_socket.release());
++    close(original_child_socket.release());
++
++    const std::uint64_t attempt_id = MakeAttemptId();
++    protocol::HelloFrame hello = {};
++    hello.header = protocol::MakeHeader(protocol::FrameType::kHello, sizeof(hello), attempt_id);
++    hello.user_id = 0;
++    hello.expected_password_type = expected_password_type;
++    if (!SendPacket(parent_socket.get(), &hello, sizeof(hello))) {
++        LOGERR("[H40 V50 HELPER] failed to send hello attempt=%llu: %s\n",
++               static_cast<unsigned long long>(attempt_id), strerror(errno));
++        KillAndReap(pid);
++        return IsolatedVerifyResult::kFatalFailure;
++    }
++
++    std::array<std::uint8_t, sizeof(protocol::CrashFrame)> packet = {};
++    std::size_t packet_size = 0;
++    ReceiveStatus receive = ReceivePacket(
++            parent_socket.get(), MonotonicMilliseconds() + kSetupTimeoutMs,
++            &packet, &packet_size);
++    protocol::ReplyFrame reply = {};
++    protocol::CrashFrame setup_crash = {};
++    if (receive == ReceiveStatus::kPacket &&
++        IsCrash(packet, packet_size, attempt_id, &setup_crash)) {
++        SaveCrashReport(setup_crash, pid, OemMapping{});
++        int status = 0;
++        if (!WaitForChild(pid, kExitTimeoutMs, &status)) KillAndReap(pid);
++        return IsolatedVerifyResult::kFatalFailure;
++    }
++    if (receive == ReceiveStatus::kPacket &&
++        IsReply(packet, packet_size, attempt_id, &reply) &&
++        reply.header.type ==
++                static_cast<std::uint16_t>(protocol::FrameType::kPreflightFailed)) {
++        LOGERR("[H40 V50 HELPER] preflight failed attempt=%llu reason=%d stage=%u\n",
++               static_cast<unsigned long long>(attempt_id), reply.result, reply.stage);
++        int status = 0;
++        if (!WaitForChild(pid, kExitTimeoutMs, &status)) KillAndReap(pid);
++        return IsolatedVerifyResult::kFatalFailure;
++    }
++    if (receive != ReceiveStatus::kPacket ||
++        !IsReply(packet, packet_size, attempt_id, &reply) ||
++        reply.header.type != static_cast<std::uint16_t>(protocol::FrameType::kReady) ||
++        reply.result != expected_password_type ||
++        reply.stage != static_cast<std::uint32_t>(protocol::Stage::kDePrepared) ||
++        reply.flags != protocol::kReplyOemIdentityVerified) {
++        LOGERR("[H40 V50 HELPER] invalid/missing READY attempt=%llu status=%d\n",
++               static_cast<unsigned long long>(attempt_id), static_cast<int>(receive));
++        KillAndReap(pid);
++        return IsolatedVerifyResult::kFatalFailure;
++    }
++    OemMapping oem_mapping;
++    if (!CaptureHelperMaps(pid, attempt_id, &oem_mapping)) {
++        KillAndReap(pid);
++        return IsolatedVerifyResult::kFatalFailure;
++    }
++
++    std::vector<std::uint8_t> credential_packet(sizeof(protocol::CredentialFrame) +
++                                                credential.size());
++    protocol::CredentialFrame credential_header = {};
++    credential_header.header = protocol::MakeHeader(
++            protocol::FrameType::kCredential,
++            static_cast<std::uint32_t>(credential_packet.size()), attempt_id);
++    credential_header.user_id = 0;
++    credential_header.credential_size =
++            static_cast<std::uint32_t>(credential.size());
++    memcpy(credential_packet.data(), &credential_header, sizeof(credential_header));
++    memcpy(credential_packet.data() + sizeof(credential_header), credential.data(),
++           credential.size());
++    const bool credential_sent = SendPacket(parent_socket.get(), credential_packet.data(),
++                                             credential_packet.size());
++    SecureWipe(credential_packet.data(), credential_packet.size());
++    if (!credential_sent) {
++        LOGERR("[H40 V50 HELPER] failed to send credential attempt=%llu: %s\n",
++               static_cast<unsigned long long>(attempt_id), strerror(errno));
++        KillAndReap(pid);
++        return IsolatedVerifyResult::kFatalFailure;
++    }
++
++    bool verify_started = false;
++    bool have_terminal_reply = false;
++    protocol::FrameType terminal_type = protocol::FrameType::kPreflightFailed;
++    std::int32_t terminal_result = 0;
++    std::uint32_t terminal_stage = 0;
++    const std::uint64_t verify_deadline = MonotonicMilliseconds() + kVerifyTimeoutMs;
++    while (!have_terminal_reply) {
++        packet.fill(0);
++        packet_size = 0;
++        receive = ReceivePacket(parent_socket.get(), verify_deadline, &packet, &packet_size);
++        if (receive == ReceiveStatus::kTimeout) {
++            LOGERR("[H40 V50 HELPER] timeout attempt=%llu verifyStarted=%d\n",
++                   static_cast<unsigned long long>(attempt_id), verify_started);
++            KillAndReap(pid);
++            return IsolatedVerifyResult::kFatalFailure;
++        }
++        if (receive != ReceiveStatus::kPacket) {
++            int status = 0;
++            const bool reaped = WaitForChild(pid, kExitTimeoutMs, &status);
++            LOGERR("[H40 V50 HELPER] channel closed attempt=%llu verifyStarted=%d "
++                   "reaped=%d status=%d\n",
++                   static_cast<unsigned long long>(attempt_id), verify_started, reaped, status);
++            if (!reaped) KillAndReap(pid);
++            return IsolatedVerifyResult::kFatalFailure;
++        }
++
++        protocol::CrashFrame crash = {};
++        if (IsCrash(packet, packet_size, attempt_id, &crash)) {
++            SaveCrashReport(crash, pid, oem_mapping);
++            int status = 0;
++            if (!WaitForChild(pid, kExitTimeoutMs, &status)) KillAndReap(pid);
++            return IsolatedVerifyResult::kFatalFailure;
++        }
++        if (!IsReply(packet, packet_size, attempt_id, &reply)) {
++            LOGERR("[H40 V50 HELPER] malformed reply attempt=%llu size=%zu\n",
++                   static_cast<unsigned long long>(attempt_id), packet_size);
++            KillAndReap(pid);
++            return IsolatedVerifyResult::kFatalFailure;
++        }
++
++        const bool clean_diagnostics =
++                reply.flags == protocol::kReplyOemIdentityVerified;
++        if (!clean_diagnostics) {
++            LOGERR("[H40 V50 HELPER] invalid reply diagnostics attempt=%llu type=%u\n",
++                   static_cast<unsigned long long>(attempt_id), reply.header.type);
++            KillAndReap(pid);
++            return IsolatedVerifyResult::kFatalFailure;
++        }
++
++        const protocol::FrameType type =
++                static_cast<protocol::FrameType>(reply.header.type);
++        if (type == protocol::FrameType::kVerifyStarted && !verify_started &&
++            reply.result == 0 &&
++            reply.stage == static_cast<std::uint32_t>(protocol::Stage::kVerifyStarted)) {
++            verify_started = true;
++            LOGINFO("[H40 V50 HELPER] OEM verify started attempt=%llu\n",
++                    static_cast<unsigned long long>(attempt_id));
++            continue;
++        }
++        const bool valid_accepted = type == protocol::FrameType::kAccepted &&
++                                    verify_started && reply.result == 0 &&
++                                    reply.stage == static_cast<std::uint32_t>(
++                                                           protocol::Stage::kCredentialAccepted);
++        const bool valid_rejected = type == protocol::FrameType::kRejected &&
++                                    verify_started && reply.result == -1 &&
++                                    reply.stage == static_cast<std::uint32_t>(
++                                                           protocol::Stage::kVerifyReturned);
++        const bool valid_preflight_failure =
++                type == protocol::FrameType::kPreflightFailed && reply.result > 0 &&
++                reply.result <=
++                        static_cast<std::int32_t>(
++                                protocol::Failure::kUnexpectedVerifyResult) &&
++                reply.stage >= static_cast<std::uint32_t>(protocol::Stage::kStarting) &&
++                reply.stage <=
++                        static_cast<std::uint32_t>(protocol::Stage::kCredentialAccepted);
++        if (valid_accepted || valid_rejected || valid_preflight_failure) {
++            terminal_type = type;
++            terminal_result = reply.result;
++            terminal_stage = reply.stage;
++            have_terminal_reply = true;
++            continue;
++        }
++        LOGERR("[H40 V50 HELPER] unexpected reply type=%u attempt=%llu\n",
++               reply.header.type, static_cast<unsigned long long>(attempt_id));
++        KillAndReap(pid);
++        return IsolatedVerifyResult::kFatalFailure;
++    }
++
++    int child_status = 0;
++    if (!WaitForChild(pid, kExitTimeoutMs, &child_status)) {
++        LOGERR("[H40 V50 HELPER] helper failed to exit attempt=%llu\n",
++               static_cast<unsigned long long>(attempt_id));
++        KillAndReap(pid);
++        return IsolatedVerifyResult::kFatalFailure;
++    }
++    if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
++        LOGERR("[H40 V50 HELPER] abnormal exit attempt=%llu status=%d terminal=%u\n",
++               static_cast<unsigned long long>(attempt_id), child_status,
++               static_cast<unsigned int>(terminal_type));
++        return IsolatedVerifyResult::kFatalFailure;
++    }
++    if (terminal_type == protocol::FrameType::kAccepted && verify_started) {
++        LOGINFO("[H40 V50 HELPER] credential accepted attempt=%llu\n",
++                static_cast<unsigned long long>(attempt_id));
++        return IsolatedVerifyResult::kAccepted;
++    }
++    if (terminal_type == protocol::FrameType::kRejected && verify_started) {
++        LOGINFO("[H40 V50 HELPER] OEM returned -1/non-acceptance attempt=%llu\n",
++                static_cast<unsigned long long>(attempt_id));
++        return IsolatedVerifyResult::kRejected;
++    }
++    LOGERR("[H40 V50 HELPER] fatal terminal state=%u result=%d stage=%u "
++           "verifyStarted=%d attempt=%llu\n",
++           static_cast<unsigned int>(terminal_type), terminal_result, terminal_stage,
++           verify_started,
++           static_cast<unsigned long long>(attempt_id));
++    return IsolatedVerifyResult::kFatalFailure;
++}
++
++}  // namespace oplus_h40
++}  // namespace twrp
+diff --git a/oplus_h40_credential_client.hpp b/oplus_h40_credential_client.hpp
+new file mode 100644
+index 0000000..eef7d3b
+--- /dev/null
++++ b/oplus_h40_credential_client.hpp
+@@ -0,0 +1,25 @@
++#pragma once
++
++#include <string>
++
++namespace twrp {
++namespace oplus_h40 {
++
++enum class IsolatedVerifyResult {
++    kAccepted,
++    kRejected,
++    kFatalFailure,
++};
++
++// Executes the OEM credential verifier in a fresh /system/bin process using
++// H.40's stock linker namespace. No credential is placed in argv, env, or a
++// filesystem path. kRejected means the exact OEM verifier returned -1 and no
++// modern handoff occurred; ambiguous or malformed outcomes are process-lifetime
++// fatal to the adapter.
++// kAccepted proves only the OEM credential gate: V5.0 deliberately suppresses
++// the stock legacy CE initializer and requires a separate modern-SP handoff.
++IsolatedVerifyResult VerifyCredentialIsolated(const std::string& credential,
++                                               int expected_password_type);
++
++}  // namespace oplus_h40
++}  // namespace twrp
+diff --git a/oplus_h40_credential_helper.cpp b/oplus_h40_credential_helper.cpp
+new file mode 100644
+index 0000000..74b30a5
+--- /dev/null
++++ b/oplus_h40_credential_helper.cpp
+@@ -0,0 +1,764 @@
++#define LOG_TAG "H40Credential50"
++
++#include "oplus_h40_credential_protocol.hpp"
++
++#include <android/log.h>
++#include <dirent.h>
++#include <dlfcn.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <keyutils.h>
++#include <link.h>
++#include <openssl/sha.h>
++#include <signal.h>
++#include <sys/mman.h>
++#include <sys/prctl.h>
++#include <sys/resource.h>
++#include <sys/socket.h>
++#include <sys/stat.h>
++#include <sys/syscall.h>
++#include <sys/ucontext.h>
++#include <unistd.h>
++#include <string.h>
++
++#include <array>
++#include <climits>
++#include <cstdint>
++#include <cstring>
++#include <limits>
++#include <string>
++
++namespace {
++
++namespace protocol = twrp::oplus_h40::credential_protocol;
++
++constexpr char kVerifySymbol[] =
++        "_Z21OplusCredentialVerifyNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEEi";
++constexpr char kSetupDeCeSymbol[] = "_Z11setup_de_cei";
++constexpr char kGetPasswordTypeSymbol[] = "_Z17get_password_typei";
++
++using VerifyFn = int (*)(std::string, int);
++using SetupDeCeFn = bool (*)(int);
++using GetPasswordTypeFn = int (*)(int);
++
++constexpr off_t kExpectedOemFileSize = 1479432;
++constexpr std::array<std::uint8_t, SHA256_DIGEST_LENGTH> kExpectedOemSha256 = {
++        0xd7, 0xff, 0x48, 0x88, 0xd8, 0x80, 0x40, 0x59,
++        0x6b, 0x7c, 0xa6, 0xc1, 0x1e, 0xe9, 0x89, 0x89,
++        0x3b, 0x6c, 0xef, 0x91, 0xba, 0x56, 0x51, 0x20,
++        0x29, 0x61, 0x71, 0x6f, 0x8e, 0x7d, 0xe2, 0xa2,
++};
++constexpr std::uintptr_t kVerifySymbolOffset = 0x826ec;
++constexpr std::uintptr_t kSetupDeCeSymbolOffset = 0x822f0;
++constexpr std::uintptr_t kGetPasswordTypeSymbolOffset = 0x80ab8;
++constexpr std::uintptr_t kCredentialLogCallOffset = 0x82adc;
++constexpr std::uintptr_t kLegacyCeInitCallOffset = 0x82bb0;
++constexpr std::uint32_t kCredentialLogCallInstruction = 0x9403648d;
++constexpr std::uint32_t kLegacyCeInitCallInstruction = 0x940365d8;
++constexpr std::uint32_t kAarch64Nop = 0xd503201f;
++constexpr std::uint32_t kAarch64MovW0One = 0x52800020;
++
++struct OpcodeExpectation {
++    std::uintptr_t offset;
++    std::uint32_t original;
++};
++
++constexpr OpcodeExpectation kVerifierOpcodeContext[] = {
++        {0x82ad0, 0x2a1303e1},  // mov w1, w19
++        {0x82ad4, 0xaa1f03e2},  // mov x2, xzr
++        {0x82ad8, 0xaa1403e5},  // mov x5, x20
++        {kCredentialLogCallOffset, kCredentialLogCallInstruction},
++        {0x82ae0, 0xf9403fe0},  // ldr x0, [sp, #0x78]
++        {0x82bac, 0x34000113},  // cbz w19, rejected return
++        {kLegacyCeInitCallOffset, kLegacyCeInitCallInstruction},
++        {0x82bb4, 0x37000080},  // tbnz w0, #0, accepted return
++        {0x82bc4, 0x2a1f03e0},  // mov w0, wzr
++        {0x82bc8, 0x14000002},  // b function epilogue
++        {0x82bcc, 0x12800000},  // mov w0, #-1
++};
++
++constexpr std::uintptr_t kCredentialLogTargetOffset = 0x15bd10;
++constexpr std::uintptr_t kLegacyCeInitTargetOffset = 0x15c310;
++constexpr std::uintptr_t kRejectedReturnOffset = 0x82bcc;
++constexpr std::uintptr_t kAcceptedReturnOffset = 0x82bc4;
++constexpr std::uintptr_t kVerifierEpilogueOffset = 0x82bd0;
++constexpr std::size_t kMaxOemExecutableIntervals = 8;
++
++void SecureWipe(void* data, std::size_t size) {
++    volatile std::uint8_t* bytes = static_cast<volatile std::uint8_t*>(data);
++    while (size != 0) {
++        *bytes++ = 0;
++        --size;
++    }
++}
++
++bool HardenEarlyProcessState() {
++    struct rlimit core_limit = {};
++    if (setrlimit(RLIMIT_CORE, &core_limit) != 0) return false;
++    if (prctl(PR_SET_PDEATHSIG, SIGKILL) != 0) return false;
++    // Close the small race where the parent exited before PDEATHSIG was armed.
++    return getppid() != 1;
++}
++
++bool ParseFdName(const char* name, int* descriptor) {
++    if (name == nullptr || descriptor == nullptr || *name == '\0') return false;
++    unsigned long value = 0;
++    for (const char* cursor = name; *cursor != '\0'; ++cursor) {
++        if (*cursor < '0' || *cursor > '9') return false;
++        const unsigned int digit = static_cast<unsigned int>(*cursor - '0');
++        if (value > (static_cast<unsigned long>(INT_MAX) - digit) / 10UL) {
++            return false;
++        }
++        value = value * 10UL + digit;
++    }
++    *descriptor = static_cast<int>(value);
++    return true;
++}
++
++bool CloseInheritedFileDescriptors() {
++    const int null_fd = open("/dev/null", O_RDWR | O_CLOEXEC | O_NOFOLLOW);
++    if (null_fd < 0 || null_fd == protocol::kProtocolFd) {
++        if (null_fd >= 0) close(null_fd);
++        return false;
++    }
++    struct stat null_status = {};
++    if (fstat(null_fd, &null_status) != 0 || !S_ISCHR(null_status.st_mode)) {
++        close(null_fd);
++        return false;
++    }
++    for (int descriptor = STDIN_FILENO; descriptor <= STDERR_FILENO;
++         ++descriptor) {
++        if (dup2(null_fd, descriptor) != descriptor) {
++            if (null_fd > STDERR_FILENO) close(null_fd);
++            return false;
++        }
++    }
++    if (null_fd > STDERR_FILENO && close(null_fd) != 0) return false;
++
++    DIR* directory = opendir("/proc/self/fd");
++    if (directory == nullptr) return false;
++    const int directory_fd = dirfd(directory);
++    if (directory_fd < 0) {
++        closedir(directory);
++        return false;
++    }
++
++    bool success = true;
++    while (success) {
++        errno = 0;
++        dirent* entry = readdir(directory);
++        if (entry == nullptr) {
++            success = errno == 0;
++            break;
++        }
++        int descriptor = -1;
++        if (!ParseFdName(entry->d_name, &descriptor) || descriptor <= STDERR_FILENO ||
++            descriptor == protocol::kProtocolFd || descriptor == directory_fd) {
++            continue;
++        }
++        if (close(descriptor) != 0 && errno != EBADF) success = false;
++    }
++    return closedir(directory) == 0 && success;
++}
++
++bool VerifyOemFileIdentity() {
++    struct stat path_status = {};
++    if (lstat(protocol::kOemLibraryPath, &path_status) != 0 ||
++        !S_ISREG(path_status.st_mode) || path_status.st_size != kExpectedOemFileSize) {
++        return false;
++    }
++
++    const int fd = open(protocol::kOemLibraryPath, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
++    if (fd < 0) return false;
++    struct stat file_status = {};
++    if (fstat(fd, &file_status) != 0 || !S_ISREG(file_status.st_mode) ||
++        file_status.st_size != kExpectedOemFileSize ||
++        file_status.st_dev != path_status.st_dev ||
++        file_status.st_ino != path_status.st_ino) {
++        close(fd);
++        return false;
++    }
++
++    void* mapping = mmap(nullptr, static_cast<std::size_t>(file_status.st_size),
++                         PROT_READ, MAP_PRIVATE, fd, 0);
++    close(fd);
++    if (mapping == MAP_FAILED) return false;
++    std::array<std::uint8_t, SHA256_DIGEST_LENGTH> digest = {};
++    const unsigned char* hashed = SHA256(
++            static_cast<const unsigned char*>(mapping),
++            static_cast<std::size_t>(file_status.st_size), digest.data());
++    munmap(mapping, static_cast<std::size_t>(file_status.st_size));
++
++    unsigned int difference = hashed == nullptr ? 1U : 0U;
++    for (std::size_t index = 0; index < digest.size(); ++index) {
++        difference |= static_cast<unsigned int>(digest[index] ^ kExpectedOemSha256[index]);
++    }
++    SecureWipe(digest.data(), digest.size());
++    return difference == 0;
++}
++
++bool SymbolHasExpectedOrigin(void* symbol, void* expected_base,
++                             std::uintptr_t expected_offset) {
++    if (symbol == nullptr || expected_base == nullptr) return false;
++    Dl_info info = {};
++    if (dladdr(symbol, &info) == 0 || info.dli_fbase != expected_base ||
++        info.dli_fname == nullptr ||
++        strcmp(info.dli_fname, protocol::kOemLibraryPath) != 0) {
++        return false;
++    }
++    const std::uintptr_t symbol_address = reinterpret_cast<std::uintptr_t>(symbol);
++    const std::uintptr_t base_address = reinterpret_cast<std::uintptr_t>(expected_base);
++    return symbol_address >= base_address &&
++           symbol_address - base_address == expected_offset;
++}
++
++std::uintptr_t DecodePcRelativeTarget(std::uintptr_t instruction_offset,
++                                      std::uint32_t instruction,
++                                      unsigned int immediate_shift,
++                                      unsigned int immediate_bits) {
++    const std::uint64_t mask = (1ULL << immediate_bits) - 1ULL;
++    std::int64_t immediate =
++            static_cast<std::int64_t>((instruction >> immediate_shift) & mask);
++    const std::int64_t sign_bit = 1LL << (immediate_bits - 1);
++    if ((immediate & sign_bit) != 0) immediate -= 1LL << immediate_bits;
++    return static_cast<std::uintptr_t>(
++            static_cast<std::int64_t>(instruction_offset) + immediate * 4);
++}
++
++bool VerifierOpcodeContextMatches(std::uintptr_t base, bool patched) {
++    for (const OpcodeExpectation& expectation : kVerifierOpcodeContext) {
++        std::uint32_t expected = expectation.original;
++        if (patched && expectation.offset == kCredentialLogCallOffset) {
++            expected = kAarch64Nop;
++        } else if (patched && expectation.offset == kLegacyCeInitCallOffset) {
++            expected = kAarch64MovW0One;
++        }
++        const std::uint32_t actual = *reinterpret_cast<const std::uint32_t*>(
++                base + expectation.offset);
++        if (actual != expected) return false;
++    }
++
++    const std::uint32_t rejected_branch = *reinterpret_cast<const std::uint32_t*>(
++            base + 0x82bac);
++    const std::uint32_t accepted_branch = *reinterpret_cast<const std::uint32_t*>(
++            base + 0x82bb4);
++    const std::uint32_t epilogue_branch = *reinterpret_cast<const std::uint32_t*>(
++            base + 0x82bc8);
++    if (DecodePcRelativeTarget(0x82bac, rejected_branch, 5, 19) !=
++                kRejectedReturnOffset ||
++        DecodePcRelativeTarget(0x82bb4, accepted_branch, 5, 14) !=
++                kAcceptedReturnOffset ||
++        DecodePcRelativeTarget(0x82bc8, epilogue_branch, 0, 26) !=
++                kVerifierEpilogueOffset) {
++        return false;
++    }
++    if (!patched) {
++        const std::uint32_t credential_log =
++                *reinterpret_cast<const std::uint32_t*>(
++                        base + kCredentialLogCallOffset);
++        const std::uint32_t legacy_ce_init =
++                *reinterpret_cast<const std::uint32_t*>(
++                        base + kLegacyCeInitCallOffset);
++        if (DecodePcRelativeTarget(kCredentialLogCallOffset, credential_log, 0, 26) !=
++                    kCredentialLogTargetOffset ||
++            DecodePcRelativeTarget(kLegacyCeInitCallOffset, legacy_ce_init, 0, 26) !=
++                    kLegacyCeInitTargetOffset) {
++            return false;
++        }
++    }
++    return true;
++}
++
++bool ApplyVerifierPatches(void* raw_base) {
++    if (raw_base == nullptr) return false;
++    const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(raw_base);
++    std::uint32_t* credential_log = reinterpret_cast<std::uint32_t*>(
++            base + kCredentialLogCallOffset);
++    std::uint32_t* legacy_ce_init = reinterpret_cast<std::uint32_t*>(
++            base + kLegacyCeInitCallOffset);
++    if (!VerifierOpcodeContextMatches(base, false)) return false;
++
++    const long page_size = sysconf(_SC_PAGESIZE);
++    if (page_size <= 0 || (page_size & (page_size - 1)) != 0) return false;
++    const std::uintptr_t page_mask = static_cast<std::uintptr_t>(page_size - 1);
++    const std::uintptr_t start =
++            reinterpret_cast<std::uintptr_t>(credential_log) & ~page_mask;
++    const std::uintptr_t end =
++            (reinterpret_cast<std::uintptr_t>(legacy_ce_init) + sizeof(std::uint32_t) +
++             page_mask) &
++            ~page_mask;
++    if (end <= start || mprotect(reinterpret_cast<void*>(start), end - start,
++                                 PROT_READ | PROT_WRITE) != 0) {
++        return false;
++    }
++
++    *credential_log = kAarch64Nop;
++    // OplusCredentialVerify still performs Gatekeeper verification. Only its
++    // legacy empty-auth CE initializer is replaced; the TWRP parent performs
++    // the real synthetic-password unwrap after this helper exits.
++    *legacy_ce_init = kAarch64MovW0One;
++    __builtin___clear_cache(reinterpret_cast<char*>(start),
++                            reinterpret_cast<char*>(end));
++    const bool restored =
++            mprotect(reinterpret_cast<void*>(start), end - start,
++                     PROT_READ | PROT_EXEC) == 0;
++    return restored && VerifierOpcodeContextMatches(base, true);
++}
++
++alignas(16) unsigned char g_signal_stack[64 * 1024];
++alignas(4) std::uint32_t g_stage =
++        static_cast<std::uint32_t>(protocol::Stage::kStarting);
++alignas(8) std::uint64_t g_attempt_id = 0;
++alignas(8) std::uint64_t g_oem_load_base = 0;
++alignas(8) std::uint64_t
++        g_oem_executable_starts[kMaxOemExecutableIntervals] = {};
++alignas(8) std::uint64_t
++        g_oem_executable_ends[kMaxOemExecutableIntervals] = {};
++alignas(4) std::uint32_t g_oem_executable_count = 0;
++static_assert(__atomic_always_lock_free(sizeof(std::uint32_t), nullptr),
++              "signal packet requires lock-free 32-bit atomics");
++static_assert(__atomic_always_lock_free(sizeof(std::uint64_t), nullptr),
++              "signal packet requires lock-free 64-bit atomics");
++
++std::uint32_t LoadStage() {
++    return __atomic_load_n(&g_stage, __ATOMIC_RELAXED);
++}
++
++void StoreStage(protocol::Stage stage) {
++    __atomic_store_n(&g_stage, static_cast<std::uint32_t>(stage), __ATOMIC_RELAXED);
++}
++
++std::uint64_t LoadAttemptId() {
++    return __atomic_load_n(&g_attempt_id, __ATOMIC_RELAXED);
++}
++
++void StoreAttemptId(std::uint64_t attempt_id) {
++    __atomic_store_n(&g_attempt_id, attempt_id, __ATOMIC_RELAXED);
++}
++
++std::uint64_t LoadOemBase() {
++    return __atomic_load_n(&g_oem_load_base, __ATOMIC_RELAXED);
++}
++
++void StoreOemBase(std::uint64_t base) {
++    __atomic_store_n(&g_oem_load_base, base, __ATOMIC_RELAXED);
++}
++
++struct OemExecutableLayout {
++    std::array<std::uint64_t, kMaxOemExecutableIntervals> starts = {};
++    std::array<std::uint64_t, kMaxOemExecutableIntervals> ends = {};
++    std::size_t count = 0;
++    std::uintptr_t expected_base = 0;
++    bool matched = false;
++    bool invalid = false;
++};
++
++int CaptureOemExecutableLayout(struct dl_phdr_info* info, size_t, void* opaque) {
++    OemExecutableLayout* layout = static_cast<OemExecutableLayout*>(opaque);
++    if (info == nullptr || layout == nullptr ||
++        static_cast<std::uintptr_t>(info->dlpi_addr) != layout->expected_base) {
++        return 0;
++    }
++    layout->matched = true;
++    if (info->dlpi_name == nullptr ||
++        strcmp(info->dlpi_name, protocol::kOemLibraryPath) != 0) {
++        layout->invalid = true;
++        return 1;
++    }
++
++    for (ElfW(Half) index = 0; index < info->dlpi_phnum; ++index) {
++        const ElfW(Phdr)& program_header = info->dlpi_phdr[index];
++        if (program_header.p_type != PT_LOAD ||
++            (program_header.p_flags & PF_X) == 0 ||
++            program_header.p_memsz == 0) {
++            continue;
++        }
++        const std::uint64_t start =
++                static_cast<std::uint64_t>(program_header.p_vaddr);
++        const std::uint64_t size =
++                static_cast<std::uint64_t>(program_header.p_memsz);
++        if (layout->count == layout->starts.size() ||
++            start > std::numeric_limits<std::uint64_t>::max() - size) {
++            layout->invalid = true;
++            return 1;
++        }
++        layout->starts[layout->count] = start;
++        layout->ends[layout->count] = start + size;
++        ++layout->count;
++    }
++    return 1;
++}
++
++bool OffsetRangeInLayout(const OemExecutableLayout& layout, std::uint64_t offset,
++                         std::uint64_t size) {
++    if (size == 0 ||
++        offset > std::numeric_limits<std::uint64_t>::max() - size) {
++        return false;
++    }
++    const std::uint64_t end = offset + size;
++    for (std::size_t index = 0; index < layout.count; ++index) {
++        if (offset >= layout.starts[index] && end <= layout.ends[index]) return true;
++    }
++    return false;
++}
++
++bool InstallOemExecutableLayout(void* raw_base) {
++    if (raw_base == nullptr) return false;
++    OemExecutableLayout layout;
++    layout.expected_base = reinterpret_cast<std::uintptr_t>(raw_base);
++    dl_iterate_phdr(CaptureOemExecutableLayout, &layout);
++    if (!layout.matched || layout.invalid || layout.count == 0) return false;
++
++    for (std::size_t index = 1; index < layout.count; ++index) {
++        const std::uint64_t start = layout.starts[index];
++        const std::uint64_t end = layout.ends[index];
++        std::size_t cursor = index;
++        while (cursor != 0 && layout.starts[cursor - 1] > start) {
++            layout.starts[cursor] = layout.starts[cursor - 1];
++            layout.ends[cursor] = layout.ends[cursor - 1];
++            --cursor;
++        }
++        layout.starts[cursor] = start;
++        layout.ends[cursor] = end;
++    }
++    for (std::size_t index = 0; index < layout.count; ++index) {
++        if (layout.ends[index] <= layout.starts[index] ||
++            (index != 0 && layout.starts[index] < layout.ends[index - 1])) {
++            return false;
++        }
++    }
++    if (!OffsetRangeInLayout(layout, kVerifySymbolOffset, sizeof(std::uint32_t)) ||
++        !OffsetRangeInLayout(layout, kCredentialLogCallOffset,
++                             sizeof(std::uint32_t)) ||
++        !OffsetRangeInLayout(layout, kLegacyCeInitCallOffset,
++                             sizeof(std::uint32_t))) {
++        return false;
++    }
++
++    StoreOemBase(layout.expected_base);
++    for (std::size_t index = 0; index < layout.count; ++index) {
++        __atomic_store_n(&g_oem_executable_starts[index], layout.starts[index],
++                         __ATOMIC_RELAXED);
++        __atomic_store_n(&g_oem_executable_ends[index], layout.ends[index],
++                         __ATOMIC_RELAXED);
++    }
++    __atomic_store_n(&g_oem_executable_count,
++                     static_cast<std::uint32_t>(layout.count), __ATOMIC_RELEASE);
++    return true;
++}
++
++bool OemExecutableOffset(std::uint64_t address, std::uint64_t* offset) {
++    if (offset == nullptr) return false;
++    const std::uint32_t count =
++            __atomic_load_n(&g_oem_executable_count, __ATOMIC_ACQUIRE);
++    const std::uint64_t base = LoadOemBase();
++    if (count == 0 || count > kMaxOemExecutableIntervals || base == 0 ||
++        address < base) {
++        return false;
++    }
++    const std::uint64_t relative = address - base;
++    for (std::uint32_t index = 0; index < count; ++index) {
++        const std::uint64_t start = __atomic_load_n(
++                &g_oem_executable_starts[index], __ATOMIC_RELAXED);
++        const std::uint64_t end = __atomic_load_n(
++                &g_oem_executable_ends[index], __ATOMIC_RELAXED);
++        if (relative >= start && relative < end) {
++            *offset = relative;
++            return true;
++        }
++    }
++    return false;
++}
++
++bool SendReply(protocol::FrameType type, std::int32_t result, protocol::Stage stage) {
++    protocol::ReplyFrame reply = {};
++    reply.header = protocol::MakeHeader(type, sizeof(reply), LoadAttemptId());
++    reply.result = result;
++    reply.stage = static_cast<std::uint32_t>(stage);
++    if (__atomic_load_n(&g_oem_executable_count, __ATOMIC_ACQUIRE) != 0) {
++        reply.flags = protocol::kReplyOemIdentityVerified;
++    }
++    return write(protocol::kProtocolFd, &reply, sizeof(reply)) ==
++           static_cast<ssize_t>(sizeof(reply));
++}
++
++[[noreturn]] void Finish(protocol::FrameType type, std::int32_t result,
++                         protocol::Stage stage) {
++    SendReply(type, result, stage);
++    _exit(0);
++}
++
++void CrashHandler(int signal_number, siginfo_t* info, void* raw_context) {
++    const int saved_errno = errno;
++    protocol::CrashFrame crash = {};
++    crash.header.magic = protocol::kMagic;
++    crash.header.version = protocol::kVersion;
++    crash.header.type = static_cast<std::uint16_t>(protocol::FrameType::kCrashed);
++    crash.header.frame_size = sizeof(crash);
++    crash.header.attempt_id = LoadAttemptId();
++    crash.signal_number = signal_number;
++    crash.stage = LoadStage();
++    crash.signal_code = info == nullptr ? 0 : info->si_code;
++    crash.crashing_tid = static_cast<std::uint32_t>(syscall(__NR_gettid));
++#if defined(__aarch64__)
++    if (raw_context != nullptr) {
++        const ucontext_t* context = static_cast<const ucontext_t*>(raw_context);
++        if (OemExecutableOffset(context->uc_mcontext.pc,
++                                &crash.program_counter_offset)) {
++            crash.address_flags |= protocol::kCrashPcOemExecutable;
++        }
++        if (OemExecutableOffset(context->uc_mcontext.regs[30],
++                                &crash.link_register_offset)) {
++            crash.address_flags |= protocol::kCrashLrOemExecutable;
++        }
++    }
++#endif
++    errno = saved_errno;
++    const ssize_t ignored = write(protocol::kProtocolFd, &crash, sizeof(crash));
++    (void)ignored;
++    _exit(128 + signal_number);
++}
++
++bool InstallCrashHandler() {
++    stack_t stack = {};
++    stack.ss_sp = g_signal_stack;
++    stack.ss_size = sizeof(g_signal_stack);
++    if (sigaltstack(&stack, nullptr) != 0) return false;
++
++    struct sigaction action = {};
++    action.sa_sigaction = CrashHandler;
++    action.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESETHAND;
++    // Block every maskable signal while the fatal handler composes its single
++    // fixed packet; a second fault must not re-enter the alternate stack.
++    sigfillset(&action.sa_mask);
++    constexpr int signals[] = {SIGSEGV, SIGBUS, SIGABRT, SIGILL, SIGFPE};
++    for (int signal_number : signals) {
++        if (sigaction(signal_number, &action, nullptr) != 0) return false;
++    }
++    return true;
++}
++
++bool ReadHello(protocol::HelloFrame* hello) {
++    std::array<std::uint8_t, sizeof(protocol::CrashFrame)> packet = {};
++    const ssize_t received = recv(protocol::kProtocolFd, packet.data(), packet.size(), MSG_TRUNC);
++    if (received != static_cast<ssize_t>(sizeof(*hello))) return false;
++    memcpy(hello, packet.data(), sizeof(*hello));
++    if (hello->header.magic != protocol::kMagic ||
++        hello->header.version != protocol::kVersion ||
++        hello->header.type != static_cast<std::uint16_t>(protocol::FrameType::kHello) ||
++        hello->header.frame_size != sizeof(*hello) || hello->header.reserved != 0 ||
++        hello->header.attempt_id == 0 || hello->user_id != 0 ||
++        hello->expected_password_type < 1 || hello->expected_password_type > 4) {
++        return false;
++    }
++    return true;
++}
++
++bool CheckDeLayout() {
++    struct stat status = {};
++    if (stat("/data/system_de/0/spblob", &status) != 0 || !S_ISDIR(status.st_mode)) {
++        return false;
++    }
++    if (stat("/data/system/users/0.xml", &status) != 0 || !S_ISREG(status.st_mode)) {
++        return false;
++    }
++    return access("/data/system_de/0/spblob", R_OK | X_OK) == 0 &&
++           access("/data/system/users/0.xml", R_OK) == 0;
++}
++
++template <typename T>
++T Resolve(void* handle, const char* symbol, void** raw_symbol = nullptr) {
++    dlerror();
++    void* raw = dlsym(handle, symbol);
++    const char* error = dlerror();
++    if (error != nullptr || raw == nullptr) return nullptr;
++    if (raw_symbol != nullptr) *raw_symbol = raw;
++    return reinterpret_cast<T>(raw);
++}
++
++bool ReadCredential(std::uint64_t attempt_id, std::string* credential) {
++    std::array<std::uint8_t,
++               sizeof(protocol::CredentialFrame) + protocol::kMaxCredentialBytes>
++            packet = {};
++    const ssize_t received = recv(protocol::kProtocolFd, packet.data(), packet.size(), MSG_TRUNC);
++    if (received < static_cast<ssize_t>(sizeof(protocol::CredentialFrame)) ||
++        received > static_cast<ssize_t>(packet.size())) {
++        return false;
++    }
++    protocol::CredentialFrame frame = {};
++    memcpy(&frame, packet.data(), sizeof(frame));
++    const std::size_t packet_size = static_cast<std::size_t>(received);
++    if (frame.header.magic != protocol::kMagic ||
++        frame.header.version != protocol::kVersion ||
++        frame.header.type != static_cast<std::uint16_t>(protocol::FrameType::kCredential) ||
++        frame.header.frame_size != packet_size || frame.header.reserved != 0 ||
++        frame.header.attempt_id != attempt_id || frame.user_id != 0 ||
++        frame.credential_size == 0 ||
++        frame.credential_size > protocol::kMaxCredentialBytes ||
++        packet_size != sizeof(frame) + frame.credential_size) {
++        SecureWipe(packet.data(), packet.size());
++        return false;
++    }
++
++    const char* bytes = reinterpret_cast<const char*>(packet.data() + sizeof(frame));
++    if (memchr(bytes, '\0', frame.credential_size) != nullptr) {
++        SecureWipe(packet.data(), packet.size());
++        return false;
++    }
++    credential->assign(bytes, frame.credential_size);
++    SecureWipe(packet.data(), packet.size());
++    return true;
++}
++
++void SecureWipeString(std::string* value) {
++    if (value == nullptr) return;
++    if (!value->empty()) SecureWipe(&(*value)[0], value->size());
++    value->clear();
++}
++
++}  // namespace
++
++int main() {
++    if (!HardenEarlyProcessState()) return 2;
++    if (!CloseInheritedFileDescriptors()) return 2;
++    protocol::HelloFrame hello = {};
++    if (!ReadHello(&hello)) return 2;
++    StoreAttemptId(hello.header.attempt_id);
++    if (!InstallCrashHandler()) {
++        Finish(protocol::FrameType::kPreflightFailed,
++               static_cast<std::int32_t>(protocol::Failure::kIoFailed),
++               protocol::Stage::kStarting);
++    }
++
++    errno = 0;
++    const key_serial_t keyring =
++            keyctl_search(KEY_SPEC_SESSION_KEYRING, "keyring", "fscrypt", 0);
++    if (keyring < 0) {
++        __android_log_print(ANDROID_LOG_ERROR, LOG_TAG,
++                            "session fscrypt keyring unavailable: %s", strerror(errno));
++        Finish(protocol::FrameType::kPreflightFailed,
++               static_cast<std::int32_t>(protocol::Failure::kSessionKeyringUnavailable),
++               protocol::Stage::kStarting);
++    }
++
++    if (!VerifyOemFileIdentity()) {
++        __android_log_print(ANDROID_LOG_ERROR, LOG_TAG,
++                            "stock OEM library identity mismatch");
++        Finish(protocol::FrameType::kPreflightFailed,
++               static_cast<std::int32_t>(protocol::Failure::kOemIdentityMismatch),
++               protocol::Stage::kStarting);
++    }
++
++    void* handle = dlopen(protocol::kOemLibraryPath, RTLD_NOW | RTLD_LOCAL);
++    if (handle == nullptr) {
++        __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, "OEM dlopen failed: %s", dlerror());
++        Finish(protocol::FrameType::kPreflightFailed,
++               static_cast<std::int32_t>(protocol::Failure::kLibraryLoadFailed),
++               protocol::Stage::kStarting);
++    }
++
++    void* raw_verify = nullptr;
++    void* raw_setup_de_ce = nullptr;
++    void* raw_get_password_type = nullptr;
++    const VerifyFn verify = Resolve<VerifyFn>(handle, kVerifySymbol, &raw_verify);
++    const SetupDeCeFn setup_de_ce =
++            Resolve<SetupDeCeFn>(handle, kSetupDeCeSymbol, &raw_setup_de_ce);
++    const GetPasswordTypeFn get_password_type =
++            Resolve<GetPasswordTypeFn>(handle, kGetPasswordTypeSymbol,
++                                       &raw_get_password_type);
++    if (verify == nullptr || setup_de_ce == nullptr || get_password_type == nullptr) {
++        Finish(protocol::FrameType::kPreflightFailed,
++               static_cast<std::int32_t>(protocol::Failure::kSymbolMissing),
++               protocol::Stage::kStarting);
++    }
++
++    Dl_info library_info = {};
++    if (dladdr(raw_verify, &library_info) == 0 || library_info.dli_fbase == nullptr ||
++        !SymbolHasExpectedOrigin(raw_verify, library_info.dli_fbase,
++                                 kVerifySymbolOffset) ||
++        !SymbolHasExpectedOrigin(raw_setup_de_ce, library_info.dli_fbase,
++                                 kSetupDeCeSymbolOffset) ||
++        !SymbolHasExpectedOrigin(raw_get_password_type, library_info.dli_fbase,
++                                 kGetPasswordTypeSymbolOffset)) {
++        Finish(protocol::FrameType::kPreflightFailed,
++               static_cast<std::int32_t>(protocol::Failure::kOemIdentityMismatch),
++               protocol::Stage::kStarting);
++    }
++    if (!InstallOemExecutableLayout(library_info.dli_fbase)) {
++        Finish(protocol::FrameType::kPreflightFailed,
++               static_cast<std::int32_t>(protocol::Failure::kOemIdentityMismatch),
++               protocol::Stage::kStarting);
++    }
++    StoreStage(protocol::Stage::kLibraryLoaded);
++    __android_log_print(ANDROID_LOG_INFO, LOG_TAG,
++                        "exact stock OEM library loaded; keyring=%d",
++                        static_cast<int>(keyring));
++
++    if (!setup_de_ce(0)) {
++        Finish(protocol::FrameType::kPreflightFailed,
++               static_cast<std::int32_t>(protocol::Failure::kSetupDeCeFailed),
++               protocol::Stage::kLibraryLoaded);
++    }
++    StoreStage(protocol::Stage::kDePrepared);
++    const int password_type = get_password_type(0);
++    if (password_type < 1 || password_type > 4 ||
++        password_type != hello.expected_password_type) {
++        __android_log_print(ANDROID_LOG_ERROR, LOG_TAG,
++                            "password type mismatch: expected=%d actual=%d",
++                            hello.expected_password_type, password_type);
++        Finish(protocol::FrameType::kPreflightFailed,
++               static_cast<std::int32_t>(protocol::Failure::kPasswordTypeInvalid),
++               protocol::Stage::kDePrepared);
++    }
++    if (!CheckDeLayout()) {
++        Finish(protocol::FrameType::kPreflightFailed,
++               static_cast<std::int32_t>(protocol::Failure::kDeLayoutInvalid),
++               protocol::Stage::kDePrepared);
++    }
++    if (!ApplyVerifierPatches(library_info.dli_fbase)) {
++        Finish(protocol::FrameType::kPreflightFailed,
++               static_cast<std::int32_t>(protocol::Failure::kBinaryPatchFailed),
++               protocol::Stage::kDePrepared);
++    }
++    if (!SendReply(protocol::FrameType::kReady, password_type,
++                   protocol::Stage::kDePrepared)) {
++        _exit(3);
++    }
++
++    std::string credential;
++    if (!ReadCredential(LoadAttemptId(), &credential)) {
++        Finish(protocol::FrameType::kPreflightFailed,
++               static_cast<std::int32_t>(protocol::Failure::kInvalidFrame),
++               protocol::Stage::kDePrepared);
++    }
++    if (prctl(PR_SET_DUMPABLE, 0) != 0) {
++        SecureWipeString(&credential);
++        Finish(protocol::FrameType::kPreflightFailed,
++               static_cast<std::int32_t>(protocol::Failure::kIoFailed),
++               protocol::Stage::kDePrepared);
++    }
++    if (!SendReply(protocol::FrameType::kVerifyStarted, 0,
++                   protocol::Stage::kVerifyStarted)) {
++        SecureWipeString(&credential);
++        _exit(3);
++    }
++    StoreStage(protocol::Stage::kVerifyStarted);
++
++    // Keep our source buffer owned across the by-value OEM ABI call so it can
++    // be scrubbed deterministically instead of leaving a moved allocation.
++    const int verify_result = verify(credential, 0);
++    SecureWipeString(&credential);
++    StoreStage(protocol::Stage::kVerifyReturned);
++    if (verify_result == -1) {
++        Finish(protocol::FrameType::kRejected, verify_result,
++               protocol::Stage::kVerifyReturned);
++    }
++    if (verify_result != 0) {
++        Finish(protocol::FrameType::kPreflightFailed,
++               static_cast<std::int32_t>(protocol::Failure::kUnexpectedVerifyResult),
++               protocol::Stage::kVerifyReturned);
++    }
++    StoreStage(protocol::Stage::kCredentialAccepted);
++    Finish(protocol::FrameType::kAccepted, 0,
++           protocol::Stage::kCredentialAccepted);
++}
+diff --git a/oplus_h40_credential_protocol.hpp b/oplus_h40_credential_protocol.hpp
+new file mode 100644
+index 0000000..45dcc30
+--- /dev/null
++++ b/oplus_h40_credential_protocol.hpp
+@@ -0,0 +1,133 @@
++#pragma once
++
++#include <cstddef>
++#include <cstdint>
++#include <type_traits>
++
++namespace twrp {
++namespace oplus_h40 {
++namespace credential_protocol {
++
++constexpr char kHelperPath[] = "/system/bin/oplus_h40_credential_helper";
++constexpr char kOemLibraryPath[] = "/system/lib64/libdecrypt_recovery.so";
++constexpr int kProtocolFd = 3;
++constexpr std::uint32_t kMagic = 0x30433548;  // "H5C0" in little endian.
++constexpr std::uint16_t kVersion = 3;
++constexpr std::uint32_t kMaxCredentialBytes = 1024;
++constexpr std::uint32_t kReplyOemIdentityVerified = 1U << 0;
++constexpr std::uint32_t kKnownReplyFlags = kReplyOemIdentityVerified;
++constexpr std::uint32_t kCrashPcOemExecutable = 1U << 0;
++constexpr std::uint32_t kCrashLrOemExecutable = 1U << 1;
++constexpr std::uint32_t kKnownCrashAddressFlags =
++        kCrashPcOemExecutable | kCrashLrOemExecutable;
++
++enum class FrameType : std::uint16_t {
++    kHello = 1,
++    kReady = 2,
++    kCredential = 3,
++    kVerifyStarted = 4,
++    kAccepted = 5,
++    kRejected = 6,
++    kPreflightFailed = 7,
++    kCrashed = 8,
++};
++
++enum class Stage : std::uint32_t {
++    kStarting = 1,
++    kLibraryLoaded = 2,
++    kDePrepared = 3,
++    kVerifyStarted = 4,
++    kVerifyReturned = 5,
++    kCredentialAccepted = 6,
++};
++
++enum class Failure : std::int32_t {
++    kInvalidFrame = 1,
++    kSessionKeyringUnavailable = 2,
++    kLibraryLoadFailed = 3,
++    kSymbolMissing = 4,
++    kSetupDeCeFailed = 5,
++    kPasswordTypeInvalid = 6,
++    kDeLayoutInvalid = 7,
++    kOemIdentityMismatch = 8,
++    kBinaryPatchFailed = 9,
++    kIoFailed = 10,
++    kUnexpectedVerifyResult = 11,
++};
++
++struct FrameHeader {
++    std::uint32_t magic;
++    std::uint16_t version;
++    std::uint16_t type;
++    std::uint32_t frame_size;
++    std::uint32_t reserved;
++    std::uint64_t attempt_id;
++};
++
++struct HelloFrame {
++    FrameHeader header;
++    std::int32_t user_id;
++    std::int32_t expected_password_type;
++};
++
++struct CredentialFrame {
++    FrameHeader header;
++    std::int32_t user_id;
++    std::uint32_t credential_size;
++    // credential_size bytes immediately follow in the same SOCK_SEQPACKET record.
++};
++
++struct ReplyFrame {
++    FrameHeader header;
++    std::int32_t result;
++    std::uint32_t stage;
++    std::uint32_t flags;
++    std::uint32_t reserved;
++};
++
++struct CrashFrame {
++    FrameHeader header;
++    std::int32_t signal_number;
++    std::uint32_t stage;
++    std::int32_t signal_code;
++    std::uint32_t crashing_tid;
++    std::uint64_t program_counter_offset;
++    std::uint64_t link_register_offset;
++    std::uint32_t address_flags;
++    std::uint32_t reserved;
++};
++
++static_assert(sizeof(FrameHeader) == 24, "unexpected H.40 V5.0 frame-header ABI");
++static_assert(sizeof(HelloFrame) == 32, "unexpected H.40 V5.0 hello ABI");
++static_assert(sizeof(CredentialFrame) == 32, "unexpected H.40 V5.0 credential ABI");
++static_assert(sizeof(ReplyFrame) == 40, "unexpected H.40 V5.0 reply ABI");
++static_assert(sizeof(CrashFrame) == 64, "unexpected H.40 V5.0 crash ABI");
++static_assert(std::is_trivially_copyable<FrameHeader>::value, "frame header must be POD");
++static_assert(std::is_trivially_copyable<HelloFrame>::value, "hello frame must be POD");
++static_assert(std::is_trivially_copyable<CredentialFrame>::value,
++              "credential frame must be POD");
++static_assert(std::is_trivially_copyable<ReplyFrame>::value, "reply frame must be POD");
++static_assert(std::is_trivially_copyable<CrashFrame>::value, "crash frame must be POD");
++
++inline FrameHeader MakeHeader(FrameType type, std::uint32_t size,
++                              std::uint64_t attempt_id) {
++    FrameHeader header = {};
++    header.magic = kMagic;
++    header.version = kVersion;
++    header.type = static_cast<std::uint16_t>(type);
++    header.frame_size = size;
++    header.attempt_id = attempt_id;
++    return header;
++}
++
++inline bool HeaderMatches(const FrameHeader& header, FrameType type,
++                          std::uint32_t size, std::uint64_t attempt_id) {
++    return header.magic == kMagic && header.version == kVersion &&
++           header.type == static_cast<std::uint16_t>(type) &&
++           header.frame_size == size && header.reserved == 0 &&
++           header.attempt_id == attempt_id;
++}
++
++}  // namespace credential_protocol
++}  // namespace oplus_h40
++}  // namespace twrp
+diff --git a/oplus_h40_decrypt.cpp b/oplus_h40_decrypt.cpp
+new file mode 100644
+index 0000000..367c880
+--- /dev/null
++++ b/oplus_h40_decrypt.cpp
+@@ -0,0 +1,1090 @@
++#include "oplus_h40_decrypt.hpp"
++
++#include <android/binder_auto_utils.h>
++#include <android/binder_manager.h>
++#include <android/hidl/base/1.0/IBase.h>
++#include <android/hidl/manager/1.0/IServiceManager.h>
++#include <cutils/properties.h>
++#include <dlfcn.h>
++#include <fcntl.h>
++#include <hidl/ServiceManagement.h>
++#include <keyutils.h>
++#include <linux/fscrypt.h>
++#include <sys/ioctl.h>
++#include <sys/mount.h>
++#include <sys/stat.h>
++#include <sys/wait.h>
++#include <unistd.h>
++#include <fstream>
++#include <vector>
++#include <utils/StrongPointer.h>
++
++#include <cerrno>
++#include <climits>
++#include <cstddef>
++#include <cstring>
++#include <dirent.h>
++#include <mutex>
++#include <string>
++
++#include "twcommon.h"
++#include "oplus_h40_credential_client.hpp"
++
++namespace twrp {
++namespace oplus_h40 {
++namespace {
++
++using android::hardware::defaultServiceManager;
++using android::hidl::base::V1_0::IBase;
++using android::hidl::manager::V1_0::IServiceManager;
++
++constexpr char kLibrary[] = "libdecrypt_recovery.so";
++constexpr char kSetupDeCeSymbol[] = "_Z11setup_de_cei";
++constexpr char kGetPasswordTypeSymbol[] = "_Z17get_password_typei";
++constexpr char kInitUser0CeSymbol[] = "_Z21fscrypt_init_user0_cev";
++constexpr char kMountMetadataSymbol[] =
++        "_Z32fscrypt_mount_metadata_encryptedRKNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEE";
++
++constexpr char kCryptoengFqName[] =
++        "vendor.oplus.hardware.cryptoeng@1.0::ICryptoeng";
++constexpr char kCryptoengInstance[] = "default";
++
++// These are the exact service names in the H.40 recovery ramdisk. Requiring
++// consecutive samples rejects an immediate linker-crash loop. The HIDL
++// registry probe below independently proves that cryptoeng registered and is
++// responsive; init's "running" property by itself is not sufficient.
++constexpr const char* kMetadataServices[] = {
++        "hwservicemanager",
++        "keymaster-4-0",
++        "qseecomd",
++        "hal_cryptoeng_oplus",
++};
++constexpr const char* kCredentialServices[] = {
++        "vendor.gatekeeper-1-0",
++        "keystore2",
++};
++constexpr char kAuthorizationService[] = "android.security.authorization";
++constexpr int kServiceWaitPolls = 150;
++constexpr int kStableServicePolls = 5;
++constexpr useconds_t kServicePollIntervalUs = 100000;
++
++using SetupDeCeFn = bool (*)(int);
++using GetPasswordTypeFn = int (*)(int);
++using InitUser0CeFn = bool (*)();
++using MountMetadataFn = bool (*)(const std::string&);
++
++struct Api {
++    void* handle = nullptr;
++    SetupDeCeFn setup_de_ce = nullptr;
++    GetPasswordTypeFn get_password_type = nullptr;
++    InitUser0CeFn init_user0_ce = nullptr;
++    MountMetadataFn mount_metadata = nullptr;
++};
++
++enum class Phase {
++    kIdle,
++    kActive,
++    kPreparedLocked,
++    kPreparedNoLock,
++    kAwaitingModernHandoff,
++    kUnlocked,
++    kFatal,
++};
++
++struct RuntimeState {
++    Phase phase = Phase::kIdle;
++    bool data_mapped = false;
++    bool user0_ce_ready = false;
++    User0State user0;
++};
++
++RuntimeState& GetRuntimeState();
++
++bool EnsureFscryptSessionKeyring() {
++    constexpr char kName[] = "fscrypt";
++
++    errno = 0;
++    key_serial_t keyring =
++            keyctl_search(KEY_SPEC_SESSION_KEYRING, "keyring", kName, 0);
++    if (keyring >= 0) {
++        LOGINFO("[H40 FSCRYPTKEYRING] existing: id=%d\n", static_cast<int>(keyring));
++        return true;
++    }
++    if (errno != ENOKEY) {
++        LOGERR("[H40 FSCRYPTKEYRING] search failed: %s\n", strerror(errno));
++        return false;
++    }
++
++    errno = 0;
++    keyring = add_key("keyring", kName, nullptr, 0, KEY_SPEC_SESSION_KEYRING);
++    if (keyring >= 0) {
++        LOGINFO("[H40 FSCRYPTKEYRING] created: id=%d\n", static_cast<int>(keyring));
++        return true;
++    }
++
++    const int creation_errno = errno;
++    keyring = keyctl_search(KEY_SPEC_SESSION_KEYRING, "keyring", kName, 0);
++    if (keyring >= 0) {
++        LOGINFO("[H40 FSCRYPTKEYRING] appeared concurrently: id=%d\n",
++                static_cast<int>(keyring));
++        return true;
++    }
++
++    LOGERR("[H40 FSCRYPTKEYRING] creation failed: %s\n", strerror(creation_errno));
++    return false;
++}
++
++std::mutex& GetRuntimeMutex() {
++    static std::mutex runtime_mutex;
++    return runtime_mutex;
++}
++
++std::string ReadProperty(const std::string& name) {
++    char value[PROPERTY_VALUE_MAX] = {};
++    property_get(name.c_str(), value, "");
++    return value;
++}
++
++bool SetProperty(const char* name, const char* value) {
++    if (property_set(name, value) == 0) return true;
++    LOGERR("Oplus H.40 decrypt: failed to set %s=%s\n", name, value);
++    return false;
++}
++
++bool RunResetprop(const char* name, const char* value) {
++    const pid_t pid = fork();
++    if (pid < 0) {
++        LOGERR("[H40 PORTIDENTITY] fork failed for %s: %s\n", name, strerror(errno));
++        return false;
++    }
++    if (pid == 0) {
++        execl("/system/bin/resetprop", "resetprop", name, value,
++              static_cast<char*>(nullptr));
++        _exit(127);
++    }
++
++    int status = 0;
++    if (waitpid(pid, &status, 0) != pid) {
++        LOGERR("[H40 PORTIDENTITY] waitpid failed for %s: %s\n", name, strerror(errno));
++        return false;
++    }
++    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
++        LOGERR("[H40 PORTIDENTITY] resetprop failed for %s, status=%d\n", name, status);
++        return false;
++    }
++
++    const std::string actual = ReadProperty(name);
++    if (actual != value) {
++        LOGERR("[H40 PORTIDENTITY] resetprop verification failed for %s: got=%s expected=%s\n",
++               name, actual.c_str(), value);
++        return false;
++    }
++    return true;
++}
++
++bool IsValidAndroidRelease(const std::string& value) {
++    if (value.empty() || value.size() > 16) return false;
++    bool last_was_dot = true;
++    for (char c : value) {
++        if (c == '.') {
++            if (last_was_dot) return false;
++            last_was_dot = true;
++        } else if (c >= '0' && c <= '9') {
++            last_was_dot = false;
++        } else {
++            return false;
++        }
++    }
++    return !last_was_dot;
++}
++
++bool IsLeapYear(int year) {
++    return (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
++}
++
++bool IsValidSecurityPatch(const std::string& value) {
++    if (value.size() != 10 || value[4] != '-' || value[7] != '-') return false;
++    for (size_t i = 0; i < value.size(); ++i) {
++        if (i == 4 || i == 7) continue;
++        if (value[i] < '0' || value[i] > '9') return false;
++    }
++    const int year = std::stoi(value.substr(0, 4));
++    const int month = std::stoi(value.substr(5, 2));
++    const int day = std::stoi(value.substr(8, 2));
++    if (year < 2000 || month < 1 || month > 12 || day < 1) return false;
++    static const int days[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
++    int max_day = days[month - 1];
++    if (month == 2 && IsLeapYear(year)) max_day = 29;
++    return day <= max_day;
++}
++
++bool ReadBuildPropValue(const std::string& path, const std::vector<std::string>& keys,
++                        std::string* value, std::string* matched_key) {
++    std::ifstream in(path);
++    if (!in.is_open()) return false;
++
++    std::string line;
++    while (std::getline(in, line)) {
++        if (!line.empty() && line.back() == '\r') line.pop_back();
++        const size_t first = line.find_first_not_of(" \t");
++        if (first == std::string::npos || line[first] == '#') continue;
++        const size_t eq = line.find('=', first);
++        if (eq == std::string::npos) continue;
++
++        std::string name = line.substr(first, eq - first);
++        while (!name.empty() && (name.back() == ' ' || name.back() == '\t')) name.pop_back();
++        for (const auto& key : keys) {
++            if (name != key) continue;
++            std::string parsed = line.substr(eq + 1);
++            const size_t value_first = parsed.find_first_not_of(" \t");
++            if (value_first == std::string::npos) parsed.clear();
++            else parsed.erase(0, value_first);
++            while (!parsed.empty() && (parsed.back() == ' ' || parsed.back() == '\t')) {
++                parsed.pop_back();
++            }
++            *value = parsed;
++            if (matched_key) *matched_key = key;
++            return true;
++        }
++    }
++    return false;
++}
++
++bool ReadIdentityPair(const std::string& path, const std::vector<std::string>& release_keys,
++                      const std::vector<std::string>& patch_keys, std::string* release,
++                      std::string* patch) {
++    std::string release_key;
++    std::string patch_key;
++    if (!ReadBuildPropValue(path, release_keys, release, &release_key)) return false;
++    if (!ReadBuildPropValue(path, patch_keys, patch, &patch_key)) return false;
++    if (!IsValidAndroidRelease(*release) || !IsValidSecurityPatch(*patch)) {
++        LOGERR("[H40 PORTIDENTITY] invalid identity in %s\n", path.c_str());
++        return false;
++    }
++    LOGINFO("[H40 PORTIDENTITY] property source: path=%s releaseKey=%s patchKey=%s\n",
++            path.c_str(), release_key.c_str(), patch_key.c_str());
++    return true;
++}
++
++bool DiscoverInstalledSystemIdentity(std::string* release, std::string* patch) {
++    std::string slot_suffix = ReadProperty("ro.boot.slot_suffix");
++    if (slot_suffix.empty()) {
++        const std::string slot = ReadProperty("ro.boot.slot");
++        if (slot == "a" || slot == "b") slot_suffix = "_" + slot;
++    }
++    if (slot_suffix != "_a" && slot_suffix != "_b") {
++        LOGERR("[H40 PORTIDENTITY] unable to determine active system slot: suffix=%s\n",
++               slot_suffix.c_str());
++        return false;
++    }
++
++    const std::string block = "/dev/block/bootdevice/by-name/system" + slot_suffix;
++    constexpr char kMountPoint[] = "/tmp/h40-installed-system";
++    if (mkdir(kMountPoint, 0700) != 0 && errno != EEXIST) {
++        LOGERR("[H40 PORTIDENTITY] mkdir failed: %s\n", strerror(errno));
++        return false;
++    }
++
++    constexpr unsigned long kReadOnlyFlags = MS_RDONLY | MS_NOSUID | MS_NODEV | MS_NOEXEC;
++    const char* mounted_type = nullptr;
++    if (mount(block.c_str(), kMountPoint, "ext4", kReadOnlyFlags, "") == 0) {
++        mounted_type = "ext4";
++    } else if (mount(block.c_str(), kMountPoint, "erofs", kReadOnlyFlags, "") == 0) {
++        mounted_type = "erofs";
++    }
++    if (!mounted_type) {
++        LOGERR("[H40 PORTIDENTITY] read-only system mount failed for slot %s: %s\n",
++               slot_suffix.c_str(), strerror(errno));
++        rmdir(kMountPoint);
++        return false;
++    }
++
++    LOGINFO("[H40 PORTIDENTITY] installed system mounted read-only: slot=%s fs=%s\n",
++            slot_suffix.c_str(), mounted_type);
++
++    struct Candidate {
++        const char* relative_path;
++        std::vector<std::string> release_keys;
++        std::vector<std::string> patch_keys;
++    };
++    const std::vector<Candidate> candidates = {
++        {"/system/build.prop",
++         {"ro.system.build.version.release", "ro.build.version.release"},
++         {"ro.system.build.version.security_patch", "ro.build.version.security_patch"}},
++        {"/build.prop",
++         {"ro.system.build.version.release", "ro.build.version.release"},
++         {"ro.system.build.version.security_patch", "ro.build.version.security_patch"}},
++        {"/system/system/build.prop",
++         {"ro.system.build.version.release", "ro.build.version.release"},
++         {"ro.system.build.version.security_patch", "ro.build.version.security_patch"}},
++        {"/product/build.prop",
++         {"ro.product.build.version.release", "ro.build.version.release"},
++         {"ro.product.build.version.security_patch", "ro.build.version.security_patch"}},
++        {"/system_ext/build.prop",
++         {"ro.system_ext.build.version.release", "ro.build.version.release"},
++         {"ro.system_ext.build.version.security_patch", "ro.build.version.security_patch"}},
++        {"/system/product/build.prop",
++         {"ro.product.build.version.release", "ro.build.version.release"},
++         {"ro.product.build.version.security_patch", "ro.build.version.security_patch"}},
++        {"/system/system_ext/build.prop",
++         {"ro.system_ext.build.version.release", "ro.build.version.release"},
++         {"ro.system_ext.build.version.security_patch", "ro.build.version.security_patch"}},
++    };
++
++    bool found = false;
++    for (const auto& candidate : candidates) {
++        const std::string path = std::string(kMountPoint) + candidate.relative_path;
++        std::string candidate_release;
++        std::string candidate_patch;
++        if (ReadIdentityPair(path, candidate.release_keys, candidate.patch_keys,
++                             &candidate_release, &candidate_patch)) {
++            *release = candidate_release;
++            *patch = candidate_patch;
++            found = true;
++            break;
++        }
++    }
++
++    if (umount(kMountPoint) != 0) {
++        LOGERR("[H40 PORTIDENTITY] failed to unmount installed system: %s\n", strerror(errno));
++        return false;
++    }
++    rmdir(kMountPoint);
++
++    if (!found) {
++        LOGERR("[H40 PORTIDENTITY] no reliable release/SPL pair found in installed system\n");
++        return false;
++    }
++    return true;
++}
++
++bool PrepareKeymasterBuildIdentity() {
++    const std::string keymaster_state = ReadProperty("init.svc.keymaster-4-0");
++    if (keymaster_state == "running" || keymaster_state == "restarting") {
++        LOGERR("[H40 PORTIDENTITY] refusing late identity change: keymaster-4-0=%s\n",
++               keymaster_state.c_str());
++        return false;
++    }
++
++    std::string system_release;
++    std::string system_patch;
++    if (!DiscoverInstalledSystemIdentity(&system_release, &system_patch)) return false;
++
++    const std::string vendor_patch = ReadProperty("ro.vendor.build.security_patch");
++    if (!IsValidSecurityPatch(vendor_patch)) {
++        LOGERR("[H40 PORTIDENTITY] recovery vendor patch missing/invalid\n");
++        return false;
++    }
++
++    LOGINFO("[H40 PORTIDENTITY] source: release=%s systemPatch=%s vendorPatch=%s\n",
++            system_release.c_str(), system_patch.c_str(), vendor_patch.c_str());
++
++    if (!RunResetprop("ro.build.version.release", system_release.c_str())) return false;
++    if (!RunResetprop("ro.build.version.security_patch", system_patch.c_str())) return false;
++
++    const std::string after_release = ReadProperty("ro.build.version.release");
++    const std::string after_patch = ReadProperty("ro.build.version.security_patch");
++    const std::string after_vendor_patch = ReadProperty("ro.vendor.build.security_patch");
++    if (after_release != system_release || after_patch != system_patch) {
++        LOGERR("[H40 PORTIDENTITY] final identity verification failed\n");
++        return false;
++    }
++    if (after_vendor_patch != vendor_patch) {
++        LOGERR("[H40 PORTIDENTITY] vendor patch changed unexpectedly: before=%s after=%s\n",
++               vendor_patch.c_str(), after_vendor_patch.c_str());
++        return false;
++    }
++
++    LOGINFO("[H40 PORTIDENTITY] applied: release=%s systemPatch=%s\n",
++            after_release.c_str(), after_patch.c_str());
++    return true;
++}
++
++Result FailActive(const char* reason) {
++    RuntimeState& state = GetRuntimeState();
++    state.phase = Phase::kFatal;
++    LOGERR("Oplus H.40 v5 hybrid adapter entered process-lifetime fatal state: %s\n", reason);
++    return Result::kFatalFailure;
++}
++
++template <std::size_t N>
++bool WaitForRunningServices(const char* const (&services)[N], const char* phase) {
++    int stable_polls = 0;
++    for (int poll = 0; poll < kServiceWaitPolls; ++poll) {
++        bool all_running = true;
++        for (const char* service : services) {
++            if (ReadProperty(std::string("init.svc.") + service) != "running") {
++                all_running = false;
++                break;
++            }
++        }
++        if (all_running) {
++            if (++stable_polls >= kStableServicePolls) return true;
++        } else {
++            stable_polls = 0;
++        }
++        usleep(kServicePollIntervalUs);
++    }
++
++    LOGERR("Oplus H.40 decrypt: timed out waiting for %s services\n", phase);
++    for (const char* service : services) {
++        const std::string state = ReadProperty(std::string("init.svc.") + service);
++        LOGERR("Oplus H.40 decrypt: init.svc.%s=%s\n", service, state.c_str());
++    }
++    return false;
++}
++
++bool WaitForStoppedGatekeeper() {
++    for (int poll = 0; poll < kServiceWaitPolls; ++poll) {
++        if (ReadProperty("init.svc.gatekeeperd") == "stopped") return true;
++        usleep(kServicePollIntervalUs);
++    }
++    LOGERR("Oplus H.40 decrypt: gatekeeperd did not stop before metadata mapping (state=%s)\n",
++           ReadProperty("init.svc.gatekeeperd").c_str());
++    return false;
++}
++
++bool WaitForPropertyValue(const char* name, const char* expected, const char* phase) {
++    for (int poll = 0; poll < kServiceWaitPolls; ++poll) {
++        if (ReadProperty(name) == expected) return true;
++        usleep(kServicePollIntervalUs);
++    }
++    LOGERR("Oplus H.40 decrypt: timed out waiting for %s (%s=%s, expected %s)\n",
++           phase, name, ReadProperty(name).c_str(), expected);
++    return false;
++}
++
++bool WaitForCryptoengEndpoint() {
++    android::sp<IServiceManager> manager = defaultServiceManager();
++    if (manager == nullptr) {
++        LOGERR("Oplus H.40 decrypt: no binderized HIDL service manager\n");
++        return false;
++    }
++
++    int stable_polls = 0;
++    for (int poll = 0; poll < kServiceWaitPolls; ++poll) {
++        bool endpoint_ready = false;
++        bool services_running = true;
++        for (const char* service_name : kMetadataServices) {
++            if (ReadProperty(std::string("init.svc.") + service_name) != "running") {
++                services_running = false;
++                break;
++            }
++        }
++        if (services_running) {
++            auto get_result = manager->get(kCryptoengFqName, kCryptoengInstance);
++            if (get_result.isOk()) {
++                android::sp<IBase> service = get_result;
++                if (service != nullptr) {
++                    auto ping_result = service->ping();
++                    endpoint_ready = ping_result.isOk();
++                }
++            }
++        }
++
++        if (endpoint_ready) {
++            if (++stable_polls >= kStableServicePolls) {
++                LOGINFO("Oplus H.40 v4 ICryptoeng/default binderized get+ping ready after %d stable samples\n",
++                        kStableServicePolls);
++                return true;
++            }
++        } else {
++            stable_polls = 0;
++        }
++        usleep(kServicePollIntervalUs);
++    }
++
++    LOGERR("Oplus H.40 decrypt: timed out waiting for binderized %s/%s get+ping\n",
++           kCryptoengFqName, kCryptoengInstance);
++    return false;
++}
++
++bool PrepareMetadataServices() {
++    // H.40's default class may already have started gatekeeperd. Android init's
++    // explicit stop disables further class restarts; this adapter starts it
++    // again only after the OEM metadata routine maps and mounts /data.
++    if (!SetProperty("ctl.stop", "gatekeeperd") || !WaitForStoppedGatekeeper()) return false;
++
++    // QTI Keymaster snapshots the Android OS/security-patch identity while the
++    // service is constructed.  Set the current system-side identity before the
++    // H.40 stock recovery trigger starts Keymaster; keep vendor patch untouched.
++    if (!PrepareKeymasterBuildIdentity()) return false;
++
++    // This is H.40 stock recovery's own trigger. It starts the exact qseecomd,
++    // keymaster-4-0, and hwservicemanager definitions from stock init.rc.
++    if (!SetProperty("enable.qseecomd.service", "1")) return false;
++
++    // cryptoeng is normally started by `on fs`; request it again so a prior
++    // missing-CommonDCS linker crash can recover in the opt-in image.
++    if (!SetProperty("ctl.start", "hal_cryptoeng_oplus")) return false;
++    if (!WaitForRunningServices(kMetadataServices, "metadata crypto")) return false;
++    if (!WaitForPropertyValue("hwservicemanager.ready", "true",
++                              "hwservicemanager readiness")) {
++        return false;
++    }
++    return WaitForCryptoengEndpoint();
++}
++
++bool MarkDataMappedAndStartGatekeeper() {
++    RuntimeState& state = GetRuntimeState();
++    if (state.data_mapped) return true;
++
++    // Stock recovery publishes this only after the OEM metadata mount returns
++    // success. gatekeeperd's working directory is on /data, so keep its start
++    // behind the same boundary.
++    if (!SetProperty("vendor.data.mounted", "1")) return false;
++    SetProperty("ctl.start", "vendor.gatekeeper-1-0");
++    SetProperty("ctl.start", "gatekeeperd");
++    state.data_mapped = true;
++    return true;
++}
++
++bool WaitForAuthorizationEndpoint() {
++    int stable_polls = 0;
++    for (int poll = 0; poll < kServiceWaitPolls; ++poll) {
++        ::ndk::SpAIBinder service(AServiceManager_checkService(kAuthorizationService));
++        if (service.get() != nullptr) {
++            if (++stable_polls >= kStableServicePolls) {
++                LOGINFO("[H40 V50 HANDOFF] %s ready after %d stable samples\n",
++                        kAuthorizationService, kStableServicePolls);
++                return true;
++            }
++        } else {
++            stable_polls = 0;
++        }
++        usleep(kServicePollIntervalUs);
++    }
++    LOGERR("[H40 V50 HANDOFF] timed out waiting for %s\n", kAuthorizationService);
++    return false;
++}
++
++bool PrepareCredentialServices() {
++    if (!GetRuntimeState().data_mapped) {
++        LOGERR("Oplus H.40 decrypt: refusing to start credential services before mapped /data\n");
++        return false;
++    }
++    if (!SetProperty("ctl.start", "vendor.gatekeeper-1-0")) return false;
++    if (!SetProperty("ctl.start", "keystore2")) return false;
++    // The isolated OEM verifier uses the HIDL HAL. TeamWin's modern SP unwrap
++    // also publishes the resulting auth token through KeystoreAuthorization.
++    SetProperty("ctl.start", "gatekeeperd");
++    if (!WaitForRunningServices(kCredentialServices, "credential services")) return false;
++    return WaitForAuthorizationEndpoint();
++}
++
++template <typename T>
++T FindSymbol(void* handle, const char* name) {
++    dlerror();
++    void* symbol = dlsym(handle, name);
++    const char* error = dlerror();
++    if (error != nullptr) {
++        LOGERR("Oplus H.40 decrypt: missing symbol %s: %s\n", name, error);
++        return nullptr;
++    }
++    return reinterpret_cast<T>(symbol);
++}
++
++const Api& GetApi() {
++    static const Api api = [] {
++        Api loaded;
++        loaded.handle = dlopen(kLibrary, RTLD_NOW | RTLD_LOCAL);
++        if (loaded.handle == nullptr) {
++            LOGINFO("Oplus H.40 decrypt unavailable: %s\n", dlerror());
++            return loaded;
++        }
++        loaded.setup_de_ce = FindSymbol<SetupDeCeFn>(loaded.handle, kSetupDeCeSymbol);
++        loaded.get_password_type =
++                FindSymbol<GetPasswordTypeFn>(loaded.handle, kGetPasswordTypeSymbol);
++        loaded.init_user0_ce = FindSymbol<InitUser0CeFn>(loaded.handle, kInitUser0CeSymbol);
++        loaded.mount_metadata = FindSymbol<MountMetadataFn>(loaded.handle, kMountMetadataSymbol);
++        if (loaded.setup_de_ce == nullptr || loaded.get_password_type == nullptr ||
++            loaded.init_user0_ce == nullptr ||
++            loaded.mount_metadata == nullptr) {
++            dlclose(loaded.handle);
++            loaded = {};
++            return loaded;
++        }
++        LOGINFO("Oplus H.40 decrypt ABI loaded\n");
++        return loaded;
++    }();
++    return api;
++}
++
++RuntimeState& GetRuntimeState() {
++    static RuntimeState state;
++    return state;
++}
++
++bool CheckReadableFile(const char* path) {
++    struct stat status = {};
++    if (stat(path, &status) != 0) {
++        LOGERR("Oplus H.40 decrypt: cannot stat required plaintext file %s: %s\n",
++               path, strerror(errno));
++        return false;
++    }
++    if (!S_ISREG(status.st_mode)) {
++        LOGERR("Oplus H.40 decrypt: required plaintext path is not a file: %s\n", path);
++        return false;
++    }
++    if (access(path, R_OK) != 0) {
++        LOGERR("Oplus H.40 decrypt: required plaintext file is unreadable: %s (%s)\n",
++               path, strerror(errno));
++        return false;
++    }
++    return true;
++}
++
++bool CheckReadableDirectory(const char* path) {
++    struct stat status = {};
++    if (stat(path, &status) != 0) {
++        LOGERR("Oplus H.40 decrypt: cannot stat required plaintext directory %s: %s\n",
++               path, strerror(errno));
++        return false;
++    }
++    if (!S_ISDIR(status.st_mode)) {
++        LOGERR("Oplus H.40 decrypt: required plaintext path is not a directory: %s\n", path);
++        return false;
++    }
++    DIR* directory = opendir(path);
++    if (directory == nullptr) {
++        LOGERR("Oplus H.40 decrypt: cannot enumerate plaintext directory %s: %s\n",
++               path, strerror(errno));
++        return false;
++    }
++    errno = 0;
++    while (readdir(directory) != nullptr) {
++        // Confirm that the tree is traversable. The authoritative CE-key proof
++        // is the policy/key-status ioctl pair in CheckFscryptKeyPresent().
++    }
++    if (errno != 0) {
++        LOGERR("Oplus H.40 decrypt: cannot read plaintext directory %s: %s\n",
++               path, strerror(errno));
++        closedir(directory);
++        return false;
++    }
++    closedir(directory);
++    return true;
++}
++
++bool ParseCanonicalUserId(const std::string& name, const char* suffix, int* user_id) {
++    std::string stem = name;
++    const std::string wanted_suffix = suffix;
++    if (!wanted_suffix.empty()) {
++        if (stem.size() <= wanted_suffix.size() ||
++            stem.compare(stem.size() - wanted_suffix.size(), wanted_suffix.size(),
++                         wanted_suffix) != 0) {
++            return false;
++        }
++        stem.resize(stem.size() - wanted_suffix.size());
++    }
++    if (stem.empty()) return false;
++
++    int parsed = 0;
++    for (char character : stem) {
++        if (character < '0' || character > '9') return false;
++        if (parsed > (9999 - (character - '0')) / 10) {
++            *user_id = INT_MAX;
++            return true;
++        }
++        parsed = parsed * 10 + (character - '0');
++    }
++    // Treat noncanonical aliases such as 00 as unsupported user state.
++    if ((parsed == 0 && stem != "0") || (parsed != 0 && stem[0] == '0')) {
++        *user_id = INT_MAX;
++        return true;
++    }
++    *user_id = parsed;
++    return true;
++}
++
++bool ScanSingleUserDirectory(const char* path, const char* suffix, bool require_user0) {
++    DIR* directory = opendir(path);
++    if (directory == nullptr) {
++        LOGERR("Oplus H.40 decrypt: cannot scan %s: %s\n", path, strerror(errno));
++        return false;
++    }
++
++    bool found_user0 = false;
++    bool valid = true;
++    errno = 0;
++    while (dirent* entry = readdir(directory)) {
++        int user_id = -1;
++        if (!ParseCanonicalUserId(entry->d_name, suffix, &user_id)) continue;
++        if (user_id == INT_MAX) {
++            LOGERR("Oplus H.40 user0-only mode refusing malformed user entry %s/%s\n",
++                   path, entry->d_name);
++            valid = false;
++            break;
++        }
++        if (user_id != 0) {
++            LOGINFO("[H40 USERMAP] ignoring secondary user id %d from %s/%s; "
++                    "user0-only decrypt remains enforced\n",
++                    user_id, path, entry->d_name);
++            errno = 0;
++            continue;
++        }
++        found_user0 = true;
++    }
++    if (valid && errno != 0) {
++        LOGERR("Oplus H.40 decrypt: error while scanning %s: %s\n", path, strerror(errno));
++        valid = false;
++    }
++    closedir(directory);
++
++    if (valid && require_user0 && !found_user0) {
++        LOGERR("Oplus H.40 decrypt: user 0 is missing from %s\n", path);
++        valid = false;
++    }
++    return valid;
++}
++
++bool ValidateSingleUser0DeLayout() {
++    if (!CheckReadableFile("/data/unencrypted/key/version")) return false;
++    if (!CheckReadableDirectory("/data/system_de/0")) return false;
++    if (!CheckReadableFile("/data/system/users/0.xml")) return false;
++    if (!ScanSingleUserDirectory("/data/system_de", "", true)) return false;
++    if (!ScanSingleUserDirectory("/data/system/users", "", false)) return false;
++    if (!ScanSingleUserDirectory("/data/system/users", ".xml", true)) return false;
++    return true;
++}
++
++bool CheckFscryptKeyPresent(const char* path) {
++    const int directory_fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
++    if (directory_fd < 0) {
++        LOGERR("Oplus H.40 v3 cannot open CE path for fscrypt ioctls %s: %s\n",
++               path, strerror(errno));
++        return false;
++    }
++
++    struct fscrypt_get_policy_ex_arg policy_arg = {};
++    policy_arg.policy_size = sizeof(policy_arg.policy);
++    if (ioctl(directory_fd, FS_IOC_GET_ENCRYPTION_POLICY_EX, &policy_arg) != 0) {
++        LOGERR("Oplus H.40 v3 FS_IOC_GET_ENCRYPTION_POLICY_EX failed for %s: %s\n",
++               path, strerror(errno));
++        close(directory_fd);
++        return false;
++    }
++
++    struct fscrypt_get_key_status_arg status_arg = {};
++    const unsigned int policy_version = policy_arg.policy.version;
++    if (policy_version == FSCRYPT_POLICY_V1) {
++        if (policy_arg.policy_size != sizeof(policy_arg.policy.v1)) {
++            LOGERR("Oplus H.40 v3 invalid fscrypt v1 policy size for %s: %llu bytes\n",
++                   path, static_cast<unsigned long long>(policy_arg.policy_size));
++            close(directory_fd);
++            return false;
++        }
++        status_arg.key_spec.type = FSCRYPT_KEY_SPEC_TYPE_DESCRIPTOR;
++        memcpy(status_arg.key_spec.u.descriptor,
++               policy_arg.policy.v1.master_key_descriptor,
++               FSCRYPT_KEY_DESCRIPTOR_SIZE);
++    } else if (policy_version == FSCRYPT_POLICY_V2) {
++        if (policy_arg.policy_size != sizeof(policy_arg.policy.v2)) {
++            LOGERR("Oplus H.40 v3 invalid fscrypt v2 policy size for %s: %llu bytes\n",
++                   path, static_cast<unsigned long long>(policy_arg.policy_size));
++            close(directory_fd);
++            return false;
++        }
++        status_arg.key_spec.type = FSCRYPT_KEY_SPEC_TYPE_IDENTIFIER;
++        memcpy(status_arg.key_spec.u.identifier,
++               policy_arg.policy.v2.master_key_identifier,
++               FSCRYPT_KEY_IDENTIFIER_SIZE);
++    } else {
++        LOGERR("Oplus H.40 v3 unsupported fscrypt policy version %u for %s\n",
++               policy_version, path);
++        close(directory_fd);
++        return false;
++    }
++
++    LOGINFO("Oplus H.40 v3 FS_IOC_GET_ENCRYPTION_POLICY_EX version=%u for %s\n",
++            policy_version, path);
++    if (ioctl(directory_fd, FS_IOC_GET_ENCRYPTION_KEY_STATUS, &status_arg) != 0) {
++        LOGERR("Oplus H.40 v3 FS_IOC_GET_ENCRYPTION_KEY_STATUS failed for %s: %s\n",
++               path, strerror(errno));
++        close(directory_fd);
++        return false;
++    }
++    close(directory_fd);
++
++    if (status_arg.status != FSCRYPT_KEY_STATUS_PRESENT) {
++        LOGERR("Oplus H.40 v3 FS_IOC_GET_ENCRYPTION_KEY_STATUS not PRESENT for %s: status=%u\n",
++               path, status_arg.status);
++        return false;
++    }
++    LOGINFO("Oplus H.40 v3 FS_IOC_GET_ENCRYPTION_KEY_STATUS PRESENT for %s: status=%u\n",
++            path, status_arg.status);
++    return true;
++}
++
++bool ValidateUser0CeLayout() {
++    if (!CheckReadableDirectory("/data/system_ce/0")) return false;
++    if (!CheckFscryptKeyPresent("/data/system_ce/0")) return false;
++    if (!CheckReadableDirectory("/data/media/0")) return false;
++    if (!CheckFscryptKeyPresent("/data/media/0")) return false;
++    return true;
++}
++
++bool ValidateMapper(User0State* user0_state) {
++    const std::string mapper = ReadProperty("ro.crypto.fs_crypto_blkdev");
++    struct stat status = {};
++    if (mapper.empty() || mapper == "error") {
++        LOGERR("Oplus H.40 decrypt: metadata mapper property is empty or invalid\n");
++        return false;
++    }
++    if (stat(mapper.c_str(), &status) != 0) {
++        LOGERR("Oplus H.40 decrypt: cannot stat metadata mapper '%s': %s\n",
++               mapper.c_str(), strerror(errno));
++        return false;
++    }
++    if (!S_ISBLK(status.st_mode)) {
++        LOGERR("Oplus H.40 decrypt: metadata mapper is not a block device: %s\n",
++               mapper.c_str());
++        return false;
++    }
++    user0_state->crypto_block_device = mapper;
++    return true;
++}
++
++bool MapPasswordType(int raw_password_type, int* twrp_password_type) {
++    switch (raw_password_type) {
++        case -1:  // No credential, but only authoritative after CE succeeds.
++            *twrp_password_type = 0;
++            return true;
++        case 1:  // Android pattern.
++            *twrp_password_type = 2;
++            return true;
++        case 2:  // Legacy password-or-PIN; use TWRP's unrestricted keyboard.
++            *twrp_password_type = 1;
++            return true;
++        case 3:  // Android PIN.
++            *twrp_password_type = 3;
++            return true;
++        case 4:  // Android password.
++            *twrp_password_type = 1;
++            return true;
++        default:
++            LOGERR("Oplus H.40 decrypt: unsupported user 0 password type %d\n",
++                   raw_password_type);
++            return false;
++    }
++}
++
++bool PrepareUser0DeState(const Api& api, User0State* user0_state) {
++    if (!EnsureFscryptSessionKeyring()) {
++        LOGERR("[H40 FSCRYPTKEYRING] refusing setup_de_ce(0) without keyring\n");
++        return false;
++    }
++    LOGINFO("[H40 FSCRYPTKEYRING] ready before setup_de_ce(0)\n");
++    LOGINFO("Oplus H.40 invoking setup_de_ce(0)\n");
++    const bool setup_succeeded = api.setup_de_ce(0);
++    LOGINFO("Oplus H.40 setup_de_ce(0) returned %d\n", setup_succeeded);
++    if (!setup_succeeded) return false;
++
++    if (!SetProperty("recovery.reload.persist", "trigger_reload_persist")) return false;
++    sleep(1);
++
++    if (!ValidateSingleUser0DeLayout()) return false;
++
++    const int raw_password_type = api.get_password_type(0);
++    int twrp_password_type = 0;
++    if (!MapPasswordType(raw_password_type, &twrp_password_type)) return false;
++
++    user0_state->raw_password_type = raw_password_type;
++    user0_state->twrp_password_type = twrp_password_type;
++    user0_state->no_credential = raw_password_type == -1;
++    LOGINFO("Oplus H.40 user 0 password type raw=%d mapped_twrp=%d\n",
++            raw_password_type, twrp_password_type);
++
++    if (user0_state->no_credential) {
++        // OEM -1 can also represent a read failure. It means "no credential"
++        // only when the OEM CE helper proves that the no-lock key is usable.
++        RuntimeState& state = GetRuntimeState();
++        state.user0_ce_ready = api.init_user0_ce();
++        LOGINFO("Oplus H.40 no-credential CE postcondition returned %d\n",
++                state.user0_ce_ready);
++        if (!state.user0_ce_ready) return false;
++        if (!ValidateUser0CeLayout()) return false;
++    } else {
++        // Credentialed synthetic-password state must be plaintext after DE.
++        // get_password_type() proves that the OEM *.pwd record was readable;
++        // this directory check proves the containing SP state is traversable.
++        if (!CheckReadableDirectory("/data/system_de/0/spblob")) return false;
++    }
++
++    LOGINFO("Oplus H.40 user 0 DE state validated\n");
++    return true;
++}
++
++}  // namespace
++
++Result PrepareMetadataRuntime() {
++    std::lock_guard<std::mutex> lock(GetRuntimeMutex());
++    if (!EnsureFscryptSessionKeyring()) {
++        return FailActive("fscrypt session keyring unavailable before metadata decrypt");
++    }
++    LOGINFO("[H40 FSCRYPTKEYRING] ready before TWRP metadata decrypt\n");
++
++    const Api& api = GetApi();
++    if (api.handle == nullptr) return Result::kUnavailable;
++
++    RuntimeState& state = GetRuntimeState();
++    if (state.phase == Phase::kFatal) return Result::kFatalFailure;
++    if (state.phase == Phase::kActive || state.phase == Phase::kPreparedLocked ||
++        state.phase == Phase::kPreparedNoLock || state.phase == Phase::kUnlocked) {
++        return Result::kSuccess;
++    }
++    if (state.phase != Phase::kIdle) {
++        return FailActive("unexpected phase before TWRP metadata runtime preparation");
++    }
++
++    state.phase = Phase::kActive;
++    LOGINFO("Oplus H.40 v4 hybrid activated; TWRP owns metadata mapping, OEM owns DE/CE\n");
++
++    if (!PrepareMetadataServices()) {
++        return FailActive("metadata crypto services unavailable");
++    }
++
++    // V4.1: TeamWin KeyStorage is compiled against a direct HIDL Keymaster 4.0
++    // backend. PrepareMetadataServices() above has already brought up the H.40
++    // qsee/keymaster/hwservicemanager stack, so no Keystore2 Binder daemon is
++    // needed for metadata-key retrieval.
++    LOGINFO("Oplus H.40 v4.1 metadata backend: direct HIDL Keymaster 4.0\n");
++    return Result::kSuccess;
++}
++
++bool IsActive() {
++    std::lock_guard<std::mutex> lock(GetRuntimeMutex());
++    return GetRuntimeState().phase != Phase::kIdle;
++}
++
++Result MountMetadataAndPrepareDe(const std::string& mount_point, User0State* user0_state) {
++    std::lock_guard<std::mutex> lock(GetRuntimeMutex());
++    if (user0_state == nullptr || mount_point != "/data") {
++        LOGERR("Oplus H.40 decrypt: refusing invalid metadata request for '%s'\n",
++               mount_point.c_str());
++        return Result::kFatalFailure;
++    }
++
++    const Api& api = GetApi();
++    if (api.handle == nullptr) return Result::kUnavailable;
++
++    RuntimeState& state = GetRuntimeState();
++    if (state.phase == Phase::kFatal) return Result::kFatalFailure;
++    if (state.phase == Phase::kPreparedLocked || state.phase == Phase::kPreparedNoLock) {
++        *user0_state = state.user0;
++        return Result::kSuccess;
++    }
++    if (state.phase == Phase::kUnlocked) {
++        return FailActive("metadata preparation requested after CE unlock");
++    }
++    if (state.phase != Phase::kActive) {
++        return FailActive("TWRP metadata handoff requested before runtime preparation");
++    }
++
++    LOGINFO("Oplus H.40 v4 hybrid adopting TWRP metadata mapping for %s\n",
++            mount_point.c_str());
++    if (!ValidateMapper(&state.user0)) return FailActive("TWRP metadata mapper validation failed");
++    if (!MarkDataMappedAndStartGatekeeper()) {
++        return FailActive("post-map property/service sequence failed");
++    }
++    if (!PrepareUser0DeState(api, &state.user0)) {
++        return FailActive("user 0 DE/password state validation failed");
++    }
++
++    state.phase = state.user0.no_credential ? Phase::kPreparedNoLock : Phase::kPreparedLocked;
++    *user0_state = state.user0;
++    return Result::kSuccess;
++}
++
++Result DecryptUser(const std::string& password, int user_id) {
++    std::lock_guard<std::mutex> lock(GetRuntimeMutex());
++    RuntimeState& state = GetRuntimeState();
++    if (state.phase == Phase::kIdle) return Result::kUnavailable;
++    if (state.phase == Phase::kFatal) return Result::kFatalFailure;
++    if (state.phase == Phase::kActive ||
++        state.phase == Phase::kAwaitingModernHandoff ||
++        state.phase == Phase::kUnlocked) {
++        return FailActive("credential request arrived in an invalid adapter phase");
++    }
++
++    // The stock H.40 ABI is hard-wired to user 0, and the exact verifier
++    // patch plus modern handoff is validated only for that user. A secondary
++    // user remains an authoritative refusal, never a generic fallback.
++    if (user_id != 0) {
++        LOGERR("Oplus H.40 user0-only mode refusing credential for user %d\n", user_id);
++        return FailActive("credential request targeted an unsupported user");
++    }
++
++    const Api& api = GetApi();
++    if (api.handle == nullptr) return FailActive("OEM ABI disappeared after activation");
++
++    if (password == "!") {
++        if (!state.user0.no_credential) {
++            LOGERR("Oplus H.40 decrypt: refusing no-lock probe for credentialed user 0\n");
++            return FailActive("no-lock credential used for a locked user");
++        }
++
++        // Recheck current CE state instead of trusting the setup-time result.
++        LOGINFO("Oplus H.40 rechecking no-credential user 0 CE postcondition\n");
++        state.user0_ce_ready = api.init_user0_ce();
++        LOGINFO("Oplus H.40 no-credential user 0 CE recheck returned %d\n",
++                state.user0_ce_ready);
++        if (!state.user0_ce_ready) {
++            return FailActive("no-credential CE recheck failed");
++        }
++        if (!ValidateUser0CeLayout()) {
++            return FailActive("no-credential CE paths are not accessible");
++        }
++        state.phase = Phase::kUnlocked;
++        LOGINFO("Oplus H.40 v3 no-lock user 0 CE postcondition satisfied\n");
++        return Result::kSuccess;
++    }
++
++    if (state.user0.no_credential) {
++        LOGERR("Oplus H.40 decrypt: refusing credential verify for no-lock user 0\n");
++        return FailActive("credential supplied for a no-lock user");
++    }
++    if (!PrepareCredentialServices()) {
++        return FailActive("credential services unavailable before isolated verifier");
++    }
++
++    LOGINFO("[H40 V50 HANDOFF] launching exact-H.40 isolated credential gate for user 0\n");
++    const IsolatedVerifyResult isolated_result =
++            VerifyCredentialIsolated(password, state.user0.raw_password_type);
++    if (isolated_result == IsolatedVerifyResult::kRejected) {
++        // OEM -1/non-acceptance is retryable. The modern path is never called
++        // for a non-accepted credential, avoiding a second Gatekeeper attempt.
++        return Result::kRejected;
++    }
++    if (isolated_result != IsolatedVerifyResult::kAccepted) {
++        return FailActive("isolated OEM credential gate failed ambiguously");
++    }
++
++    // The exact-hash helper suppresses the OEM Android-10 empty-auth CE init.
++    // Keep the adapter locked until TeamWin derives the real synthetic-password
++    // secret and the fscrypt key/policy proof succeeds.
++    state.phase = Phase::kAwaitingModernHandoff;
++    LOGINFO("[H40 V50 HANDOFF] OEM credential accepted; requesting modern SP unwrap\n");
++    return Result::kModernHandoff;
++}
++
++Result CompleteModernHandoff(bool decrypt_succeeded) {
++    std::lock_guard<std::mutex> lock(GetRuntimeMutex());
++    RuntimeState& state = GetRuntimeState();
++    if (state.phase != Phase::kAwaitingModernHandoff) {
++        return FailActive("modern decryption completion arrived in an invalid phase");
++    }
++    if (!decrypt_succeeded) {
++        return FailActive("modern synthetic-password handoff failed after OEM acceptance");
++    }
++    state.user0_ce_ready = ValidateUser0CeLayout();
++    if (!state.user0_ce_ready) {
++        return FailActive("modern handoff returned without CE key/layout proof");
++    }
++    state.phase = Phase::kUnlocked;
++    LOGINFO("[H40 V50 HANDOFF] modern user 0 CE postcondition satisfied\n");
++    return Result::kSuccess;
++}
++
++}  // namespace oplus_h40
++}  // namespace twrp
+diff --git a/oplus_h40_decrypt.hpp b/oplus_h40_decrypt.hpp
+new file mode 100644
+index 0000000..46cfabc
+--- /dev/null
++++ b/oplus_h40_decrypt.hpp
+@@ -0,0 +1,37 @@
++#pragma once
++
++#include <string>
++
++namespace twrp {
++namespace oplus_h40 {
++
++// Values needed to construct TWRP's deliberately minimal user-0-only FBE
++// state without invoking TeamWin vold's keystore2-backed DE implementation.
++struct User0State {
++    int raw_password_type = 0;
++    int twrp_password_type = 0;
++    bool no_credential = false;
++    std::string crypto_block_device;
++};
++
++// Unavailable is possible only before the OEM implementation has performed
++// any side effect. kModernHandoff is the sole explicit transition into TeamWin
++// decryption, and is returned only after the isolated OEM gate accepts the
++// credential. kRejected is the only retryable outcome; kFatalFailure latches
++// every ambiguous or infrastructure failure for the recovery process lifetime.
++enum class Result {
++    kUnavailable,
++    kRejected,
++    kFatalFailure,
++    kModernHandoff,
++    kSuccess,
++};
++
++bool IsActive();
++Result PrepareMetadataRuntime();
++Result MountMetadataAndPrepareDe(const std::string& mount_point, User0State* user0_state);
++Result DecryptUser(const std::string& password, int user_id);
++Result CompleteModernHandoff(bool decrypt_succeeded);
++
++}  // namespace oplus_h40
++}  // namespace twrp
+diff --git a/partitionmanager.cpp b/partitionmanager.cpp
+index 2766b4c..8be659a 100755
+--- a/partitionmanager.cpp
++++ b/partitionmanager.cpp
+@@ -111,6 +111,43 @@ extern "C" {
+ #endif
+ #endif
+ #endif
++#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
++#include "oplus_h40_decrypt.hpp"
++
++namespace {
++bool g_oplus_h40_decrypt_blocked = false;
++
++bool IsOplusMapperMountedAtData(const std::string& mapper) {
++	struct stat mapper_status = {};
++	struct stat data_status = {};
++	if (stat(mapper.c_str(), &mapper_status) != 0) {
++		LOGERR("Oplus H.40 decrypt: cannot stat metadata mapper '%s': %s\n",
++			mapper.c_str(), strerror(errno));
++		return false;
++	}
++	if (!S_ISBLK(mapper_status.st_mode)) {
++		LOGERR("Oplus H.40 decrypt: metadata mapper is not a block device: %s\n",
++			mapper.c_str());
++		return false;
++	}
++	if (stat("/data", &data_status) != 0) {
++		LOGERR("Oplus H.40 decrypt: mounted /data cannot be inspected: %s\n", strerror(errno));
++		return false;
++	}
++	if (!S_ISDIR(data_status.st_mode)) {
++		LOGERR("Oplus H.40 decrypt: /data is not a directory after OEM metadata setup\n");
++		return false;
++	}
++	if (data_status.st_dev != mapper_status.st_rdev) {
++		LOGERR("Oplus H.40 decrypt: /data device %llu does not match mapper %s device %llu\n",
++			static_cast<unsigned long long>(data_status.st_dev), mapper.c_str(),
++			static_cast<unsigned long long>(mapper_status.st_rdev));
++		return false;
++	}
++	return true;
++}
++}
++#endif
+ 
+ #ifdef AB_OTA_UPDATER
+ #include <android/hardware/boot/1.0/IBootControl.h>
+@@ -586,6 +623,12 @@ int TWPartitionManager::Write_Fstab(void) {
+ void TWPartitionManager::Decrypt_Data() {
+ 	#ifdef TW_INCLUDE_CRYPTO
+ 	TWPartition* Decrypt_Data = Find_Partition_By_Path("/data");
++#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
++	if (g_oplus_h40_decrypt_blocked) {
++		LOGERR("Oplus H.40 v3 failure latch is set; refusing further OEM decrypt operations\n");
++		return;
++	}
++#endif
+ 	if (Decrypt_Data && Decrypt_Data->Is_Encrypted && !Decrypt_Data->Is_Decrypted) {
+ 		Set_Crypto_State();
+ 		TWPartition* Key_Directory_Partition = Find_Partition_By_Path(Decrypt_Data->Key_Directory);
+@@ -596,8 +639,29 @@ void TWPartitionManager::Decrypt_Data() {
+ 			Set_Crypto_Type("file");
+ #ifdef TW_INCLUDE_FBE_METADATA_DECRYPT
+ #ifdef USE_FSCRYPT
++#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
++			bool oplus_metadata_used = false;
++			bool oplus_runtime_ready = false;
++			twrp::oplus_h40::User0State oplus_user0;
++			const twrp::oplus_h40::Result oplus_runtime =
++				twrp::oplus_h40::PrepareMetadataRuntime();
++			if (oplus_runtime == twrp::oplus_h40::Result::kSuccess) {
++				oplus_runtime_ready = true;
++			} else if (oplus_runtime == twrp::oplus_h40::Result::kFatalFailure) {
++				g_oplus_h40_decrypt_blocked = true;
++				LOGERR("Oplus H.40 v4 runtime preparation failed; refusing metadata/FDE fallback\n");
++				return;
++			}
++			if (android::vold::fscrypt_mount_metadata_encrypted(Decrypt_Data->Actual_Block_Device, Decrypt_Data->Mount_Point, false, false, Decrypt_Data->Current_File_System, TWFunc::Path_Exists(additional_fstab) ? additional_fstab : "")) {
++#else
+ 			if (android::vold::fscrypt_mount_metadata_encrypted(Decrypt_Data->Actual_Block_Device, Decrypt_Data->Mount_Point, false, false, Decrypt_Data->Current_File_System, TWFunc::Path_Exists(additional_fstab) ? additional_fstab : "")) {
++#endif
+ 				std::string crypto_blkdev = android::base::GetProperty("ro.crypto.fs_crypto_blkdev", "error");
++#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
++				if (oplus_metadata_used) {
++					crypto_blkdev = oplus_user0.crypto_block_device;
++				}
++#endif
+ 				Decrypt_Data->Decrypted_Block_Device = crypto_blkdev;
+ 				LOGINFO("Successfully decrypted metadata encrypted data partition with new block device: '%s'\n", crypto_blkdev.c_str());
+ #endif
+@@ -606,14 +670,127 @@ void TWPartitionManager::Decrypt_Data() {
+ 				while (!Decrypt_Data->Mount(false) && --retry_count)
+ 					usleep(500);
+ 				if (Decrypt_Data->Mount(false)) {
++#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
++					if (oplus_runtime_ready) {
++						const twrp::oplus_h40::Result oplus_handoff =
++							twrp::oplus_h40::MountMetadataAndPrepareDe(
++								Decrypt_Data->Mount_Point, &oplus_user0);
++						if (oplus_handoff == twrp::oplus_h40::Result::kSuccess) {
++							oplus_metadata_used = true;
++						} else {
++							Decrypt_Data->Is_Decrypted = false;
++							g_oplus_h40_decrypt_blocked = true;
++							LOGERR("Oplus H.40 v4 DE handoff failed after TWRP metadata mount (result=%d)\n",
++								static_cast<int>(oplus_handoff));
++							return;
++						}
++					}
++					if (oplus_metadata_used) {
++						if (!Decrypt_Data->Is_Mounted() ||
++							!IsOplusMapperMountedAtData(oplus_user0.crypto_block_device)) {
++							Decrypt_Data->Is_Decrypted = false;
++							g_oplus_h40_decrypt_blocked = true;
++							LOGERR("Oplus H.40 mounted-data mapper proof failed; refusing generic fallback\n");
++							return;
++						}
++						// The OEM routine may have mounted /data before TWPartition::Mount,
++						// causing Mount() to return before Find_Actual_Block_Device(). Keep
++						// both TWRP device fields pinned to the mapper we just proved backs
++						// /data, never to the encrypted raw userdata node.
++						Decrypt_Data->Decrypted_Block_Device = oplus_user0.crypto_block_device;
++						Decrypt_Data->Actual_Block_Device = oplus_user0.crypto_block_device;
++
++						LOGINFO("Oplus H.40 v4 preserving TWRP metadata mapping and bypassing generic DE/user discovery\n");
++
++						// Preserve the normal FBE backup/wipe exclusions. User discovery
++						// and key installation already belong to the selected OEM state
++						// machine, so this branch must not initialize TeamWin vold's
++						// separate keystore2-backed state.
++						Decrypt_Data->ExcludeAll(Decrypt_Data->Mount_Point + "/convert_fbe");
++						Decrypt_Data->ExcludeAll(Decrypt_Data->Mount_Point + "/unencrypted");
++						Decrypt_Data->ExcludeAll(Decrypt_Data->Mount_Point + "/misc/vold/user_keys");
++						Decrypt_Data->ExcludeAll(Decrypt_Data->Mount_Point + "/misc/vold/volume_keys");
++						Decrypt_Data->ExcludeAll(Decrypt_Data->Mount_Point + "/system/gatekeeper.password.key");
++						Decrypt_Data->ExcludeAll(Decrypt_Data->Mount_Point + "/system/gatekeeper.pattern.key");
++						Decrypt_Data->ExcludeAll(Decrypt_Data->Mount_Point + "/system/locksettings.db");
++						Decrypt_Data->ExcludeAll(Decrypt_Data->Mount_Point + "/system/locksettings.db-wal");
++						Decrypt_Data->ExcludeAll(Decrypt_Data->Mount_Point + "/misc/gatekeeper");
++						Decrypt_Data->ExcludeAll(Decrypt_Data->Mount_Point + "/misc/keystore");
++						Decrypt_Data->ExcludeAll(Decrypt_Data->Mount_Point + "/drm/kek.dat");
++						Decrypt_Data->ExcludeAll(Decrypt_Data->Mount_Point + "/system_de/0/spblob");
++						Decrypt_Data->ExcludeAll(Decrypt_Data->Mount_Point + "/system/users/0/gatekeeper.password.key");
++						Decrypt_Data->ExcludeAll(Decrypt_Data->Mount_Point + "/system/users/0/gatekeeper.pattern.key");
++						Decrypt_Data->ExcludeAll(Decrypt_Data->Mount_Point + "/cache");
++						Decrypt_Data->ExcludeAll(Decrypt_Data->Mount_Point + "/per_boot");
++						Decrypt_Data->ExcludeAll(Decrypt_Data->Mount_Point + "/gsi");
++
++						if (property_set("twrp.user.0.decrypt", "0") != 0 ||
++							property_set("twrp.all.users.decrypted", "false") != 0) {
++							Decrypt_Data->Is_Decrypted = false;
++							g_oplus_h40_decrypt_blocked = true;
++							LOGERR("Oplus H.40 failed to publish synthesized user state; refusing generic fallback\n");
++							return;
++						}
++
++						int data_state_error = 0;
++						data_state_error |= DataManager::SetValue("tw_all_users_decrypted", 0);
++						data_state_error |= DataManager::SetValue(TW_IS_FBE, 1);
++						data_state_error |= DataManager::SetValue(TW_IS_ENCRYPTED, 1);
++						data_state_error |= DataManager::SetValue(TW_IS_DECRYPTED, 0);
++						data_state_error |= DataManager::SetValue(TW_CRYPTO_PWTYPE,
++							oplus_user0.twrp_password_type);
++						data_state_error |= DataManager::SetValue("tw_crypto_pwtype_0",
++							oplus_user0.twrp_password_type);
++						data_state_error |= DataManager::SetValue("tw_crypto_user_id", 0);
++						data_state_error |= DataManager::SetValue(TW_CRYPTO_PASSWORD, "");
++						data_state_error |= DataManager::SetValue("tw_crypto_display", "");
++						if (data_state_error != 0) {
++							Decrypt_Data->Is_Decrypted = false;
++							g_oplus_h40_decrypt_blocked = true;
++							LOGERR("Oplus H.40 failed to publish synthesized DataManager state; refusing generic fallback\n");
++							return;
++						}
++
++						std::vector<users_struct>* user_list = Get_Users_List();
++						user_list->clear();
++						users_struct user0;
++						user0.userId = "0";
++						user0.userName = "0";
++						user0.type = oplus_user0.twrp_password_type;
++						user0.isDecrypted = false;
++						user_list->push_back(user0);
++
++						Decrypt_Data->Is_FBE = true;
++						Decrypt_Data->Is_Encrypted = true;
++						Decrypt_Data->Is_Decrypted = false;
++						Check_Users_Decryption_Status();
++						LOGINFO("Oplus H.40 v4 synthesized TWRP user 0 state: raw_pwtype=%d twrp_pwtype=%d\n",
++							oplus_user0.raw_password_type, oplus_user0.twrp_password_type);
++					} else
++#endif
+ 					if (!Decrypt_Data->Decrypt_FBE_DE()) {
+ 						LOGERR("Unable to decrypt FBE device\n");
+ 					}
+ 
+ 				} else {
+ 					LOGINFO("Failed to mount data after metadata decrypt\n");
++#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
++					if (oplus_metadata_used) {
++						Decrypt_Data->Is_Decrypted = false;
++						g_oplus_h40_decrypt_blocked = true;
++						LOGERR("Oplus H.40 data mount failed; refusing generic fallback\n");
++						return;
++					}
++#endif
+ 				}
+ 			} else {
++#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
++				if (oplus_runtime_ready) {
++					g_oplus_h40_decrypt_blocked = true;
++					LOGERR("Oplus H.40 v4 TWRP metadata mapping failed after runtime activation; refusing FDE fallback\n");
++					return;
++				}
++#endif
+ 				LOGINFO("Unable to decrypt metadata encryption\n");
+ 			}
+ #else
+@@ -2105,6 +2282,12 @@ void TWPartitionManager::Check_Users_Decryption_Status() {
+ 
+ int TWPartitionManager::Decrypt_Device(string Password, int user_id) {
+ #ifdef TW_INCLUDE_CRYPTO
++	#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
++	if (g_oplus_h40_decrypt_blocked) {
++		LOGERR("Oplus H.40 v3 failure latch is set; refusing further OEM decrypt operations\n");
++		return -1;
++	}
++	#endif
+ 	char crypto_blkdev[PROPERTY_VALUE_MAX];
+ 	std::vector<TWPartition*>::iterator iter;
+ 
+@@ -2125,12 +2308,38 @@ int TWPartitionManager::Decrypt_Device(string Password, int user_id) {
+ 			return -1;
+ 
+ 		bool user_need_decrypt = false;
++		#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
++		const bool oplus_active = twrp::oplus_h40::IsActive();
++		bool user_found = false;
++		if (oplus_active && user_id != 0) {
++			LOGERR("Oplus H.40 v3 supports only user 0; refusing user %d\n", user_id);
++			return -1;
++		}
++		#endif
+ 		std::vector<users_struct>::iterator iter;
+ 		for (iter = Users_List.begin(); iter != Users_List.end(); iter++) {
++			#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
++			if (oplus_active && atoi((*iter).userId.c_str()) == user_id) {
++				user_found = true;
++				if (!(*iter).isDecrypted)
++					user_need_decrypt = true;
++			} else if (!oplus_active && atoi((*iter).userId.c_str()) == user_id &&
++				!(*iter).isDecrypted) {
++				user_need_decrypt = true;
++			}
++			#else
+ 			if (atoi((*iter).userId.c_str()) == user_id && !(*iter).isDecrypted) {
+ 				user_need_decrypt = true;
+ 			}
++			#endif
++		}
++		#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
++		if (oplus_active && !user_found) {
++			LOGERR("Oplus H.40 user 0 is missing from the synthesized TWRP user map\n");
++			g_oplus_h40_decrypt_blocked = true;
++			return -1;
+ 		}
++		#endif
+ 		if (!user_need_decrypt) {
+ 			LOGINFO("User %d does not require decryption\n", user_id);
+ 			return 0;
+@@ -2140,10 +2349,57 @@ int TWPartitionManager::Decrypt_Device(string Password, int user_id) {
+ 		while (!TWFunc::Path_Exists("/data/system/users/gatekeeper.password.key") && --retry_count)
+ 			usleep(2000); // A small sleep is needed after mounting /data to ensure reliable decrypt...maybe because of DE?
+ 		gui_msg(Msg("decrypting_user_fbe=Attempting to decrypt FBE for user {1}...")(user_id));
++		#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
++		bool decrypt_success = false;
++		bool try_generic_decrypt = true;
++		const twrp::oplus_h40::Result oplus_result =
++			twrp::oplus_h40::DecryptUser(Password, user_id);
++		if (oplus_result == twrp::oplus_h40::Result::kSuccess) {
++			decrypt_success = true;
++			try_generic_decrypt = false;
++		} else if (oplus_result == twrp::oplus_h40::Result::kModernHandoff) {
++			try_generic_decrypt = false;
++			// The OEM verifier remains isolated.  TeamWin SP unwrap and the
++			// current-only FsCrypt install must run here so the recovery process
++			// retains GetCePolicies() and KeyStorage state after this call.
++			LOGINFO("[H40 V51 PARENT] deriving and installing the accepted user 0 credential in the recovery parent\n");
++			const bool modern_decrypt =
++				android::keystore::Decrypt_User_H40_Modern(user_id, Password);
++			decrypt_success = twrp::oplus_h40::CompleteModernHandoff(modern_decrypt) ==
++				twrp::oplus_h40::Result::kSuccess;
++			if (!decrypt_success) {
++				g_oplus_h40_decrypt_blocked = true;
++			}
++		} else if (oplus_result == twrp::oplus_h40::Result::kRejected) {
++			// Avoid a second Gatekeeper attempt for a rejected credential.
++			try_generic_decrypt = false;
++		} else if (oplus_result == twrp::oplus_h40::Result::kFatalFailure) {
++			// Infrastructure and ambiguous adapter failures are process-lifetime
++			// fatal. Never present them as a retryable wrong credential.
++			try_generic_decrypt = false;
++			g_oplus_h40_decrypt_blocked = true;
++		} else if (oplus_active) {
++			// Defense in depth: Unavailable is legal only before activation.
++			try_generic_decrypt = false;
++			g_oplus_h40_decrypt_blocked = true;
++			LOGERR("Oplus H.40 active adapter returned unavailable; refusing generic credential fallback\n");
++		}
++		if (try_generic_decrypt) {
++			decrypt_success = android::keystore::Decrypt_User(user_id, Password);
++		}
++		if (decrypt_success) {
++		#else
+ 		if (android::keystore::Decrypt_User(user_id, Password)) {
++		#endif
+ 			gui_msg(Msg("decrypt_user_success_fbe=User {1} Decrypted Successfully")(user_id));
+ 			Mark_User_Decrypted(user_id);
+ 			if (user_id == 0) {
++#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
++				if (oplus_result == twrp::oplus_h40::Result::kSuccess ||
++					oplus_result == twrp::oplus_h40::Result::kModernHandoff) {
++					LOGINFO("Oplus H.40 user 0 decrypted; secondary-user sweep disabled\n");
++				} else {
++#endif
+ 				// When decrypting user 0 also try all other users
+ 				std::vector<users_struct>::iterator iter;
+ 				for (iter = Users_List.begin(); iter != Users_List.end(); iter++) {
+@@ -2160,6 +2416,9 @@ int TWPartitionManager::Decrypt_Device(string Password, int user_id) {
+ 						gui_msg(Msg("decrypt_user_fail_fbe=Failed to decrypt user {1}")(tmp_user_id));
+ 					}
+ 				}
++				#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
++				}
++				#endif
+ 				Post_Decrypt("");
+ 			}
+ 

@@ -1,0 +1,62 @@
+diff --git a/libs/binder/Parcel.cpp b/libs/binder/Parcel.cpp
+index 617708f..d669dc0 100644
+--- a/libs/binder/Parcel.cpp
++++ b/libs/binder/Parcel.cpp
+@@ -174,9 +174,32 @@ status_t Parcel::finishFlattenBinder(const sp<IBinder>& binder)
+ {
+     internal::Stability::tryMarkCompilationUnit(binder.get());
+     auto category = internal::Stability::getCategory(binder.get());
+-    return writeInt32(category.repr());
++    return writeInt32(isForRpc() ? category.repr()
++                                 : static_cast<int32_t>(category.level));
++}
++
++namespace {
++
++constexpr char kH40BinderStabilityV0Marker[] = "H40_RECOVERY_BINDER_STABILITY_V0_V52";
++constexpr uint8_t kH40BinderWireFormatVersion = 1;
++
++bool IsH40LegacyKernelBinderStability(int32_t stability) {
++    // These are Android 11's complete raw stability values.  Keep the exact
++    // int32 comparison outside the enum cast so malformed high bits cannot be
++    // truncated into a valid private Stability::Level.
++    switch (stability) {
++        case 0:   // UNDECLARED
++        case 3:   // VENDOR
++        case 12:  // SYSTEM
++        case 63:  // VINTF
++            return true;
++        default:
++            return false;
++    }
+ }
+ 
++}  // namespace
++
+ status_t Parcel::finishUnflattenBinder(
+     const sp<IBinder>& binder, sp<IBinder>* out) const
+ {
+@@ -184,6 +207,23 @@ status_t Parcel::finishUnflattenBinder(
+     status_t status = readInt32(&stability);
+     if (status != OK) return status;
+ 
++    if (!isForRpc() && IsH40LegacyKernelBinderStability(stability)) {
++        static std::atomic<bool> bridge_logged(false);
++        if (!bridge_logged.exchange(true, std::memory_order_relaxed)) {
++            ALOGI("%s: translating SDK30 kernel-Binder stability values",
++                  kH40BinderStabilityV0Marker);
++        }
++        // Reproduce Category::currentFromLevel() locally.  That helper is
++        // declared inline in Stability.h but defined only in Stability.cpp,
++        // so calling it from Parcel.cpp triggers -Wundefined-inline.
++        const internal::Stability::Category category{
++                .version = kH40BinderWireFormatVersion,
++                .reserved = {0},
++                .level = static_cast<internal::Stability::Level>(stability),
++        };
++        stability = category.repr();
++    }
++
+     status = internal::Stability::setRepr(binder.get(), stability, true /*log*/);
+     if (status != OK) return status;
+ 

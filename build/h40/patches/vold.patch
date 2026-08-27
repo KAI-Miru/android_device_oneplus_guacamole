@@ -1,0 +1,2601 @@
+diff --git a/Android.bp b/Android.bp
+index 376157b..553d3f6 100644
+--- a/Android.bp
++++ b/Android.bp
+@@ -176,6 +176,7 @@ cc_library_static {
+         "android.hardware.gatekeeper@1.0",
+         "android.hardware.health.storage@1.0",
+         "android.hardware.health.storage-V1-ndk_platform",
++        "android.hardware.keymaster@4.0",
+         "android.hardware.keymaster@4.1",
+         "android.hardware.security.keymint-V1-ndk_platform",
+         "android.hardware.weaver@1.0",
+@@ -191,6 +192,7 @@ cc_library_static {
+         "libhidlbase",
+         "liblog",
+         "libchrome",
++        "libkeymaster4support",
+         "libkeymaster4_1support",
+         "libkeystoreinfo",
+         "libkeystore-attestation-application-id",
+diff --git a/Checkpoint.cpp b/Checkpoint.cpp
+index 755f0e3..8e5aea7 100644
+--- a/Checkpoint.cpp
++++ b/Checkpoint.cpp
+@@ -87,7 +87,7 @@ bool setBowState(std::string const& block_device, std::string const& state) {
+ Status cp_supportsCheckpoint(bool& result) {
+     result = false;
+ 
+-    for (const auto& entry : fstab_default) {
++    for (const auto& entry : GetFstabDefault()) {
+         if (entry.fs_mgr_flags.checkpoint_blk || entry.fs_mgr_flags.checkpoint_fs) {
+             result = true;
+             return Status::ok();
+@@ -99,7 +99,7 @@ Status cp_supportsCheckpoint(bool& result) {
+ Status cp_supportsBlockCheckpoint(bool& result) {
+     result = false;
+ 
+-    for (const auto& entry : fstab_default) {
++    for (const auto& entry : GetFstabDefault()) {
+         if (entry.fs_mgr_flags.checkpoint_blk) {
+             result = true;
+             return Status::ok();
+@@ -111,7 +111,7 @@ Status cp_supportsBlockCheckpoint(bool& result) {
+ Status cp_supportsFileCheckpoint(bool& result) {
+     result = false;
+ 
+-    for (const auto& entry : fstab_default) {
++    for (const auto& entry : GetFstabDefault()) {
+         if (entry.fs_mgr_flags.checkpoint_fs) {
+             result = true;
+             return Status::ok();
+@@ -187,7 +187,7 @@ Status cp_commitChanges() {
+ 
+     // Walk mounted file systems
+     for (const auto& mount_rec : mounts) {
+-        const auto fstab_rec = GetEntryForMountPoint(&fstab_default, mount_rec.mount_point);
++        const auto fstab_rec = GetEntryForMountPoint(&GetFstabDefault(), mount_rec.mount_point);
+         if (!fstab_rec) continue;
+ 
+         if (fstab_rec->fs_mgr_flags.checkpoint_fs) {
+@@ -364,7 +364,7 @@ Status cp_prepareCheckpoint() {
+     }
+ 
+     for (const auto& mount_rec : mounts) {
+-        const auto fstab_rec = GetEntryForMountPoint(&fstab_default, mount_rec.mount_point);
++        const auto fstab_rec = GetEntryForMountPoint(&GetFstabDefault(), mount_rec.mount_point);
+         if (!fstab_rec) continue;
+ 
+         if (fstab_rec->fs_mgr_flags.checkpoint_blk) {
+diff --git a/Decrypt.cpp b/Decrypt.cpp
+index d9f034b..d0a9d11 100755
+--- a/Decrypt.cpp
++++ b/Decrypt.cpp
+@@ -126,13 +126,13 @@ extern "C" bool lookup_ref_key(fscrypt_policy* fep, uint8_t* policy_type) {
+ 	uint8_t size = get_policy_size(fep, false);
+ 	char policy_hex[hex_size];
+ 	bytes_to_hex(descriptor, size, policy_hex);
+-	if (std::strncmp((const char*)descriptor, de_key_raw_ref.c_str(), size) == 0) {
++	if (std::strncmp((const char*)descriptor, GetDeKeyRawRef().c_str(), size) == 0) {
+ 		policy_type_string = std::to_string(fep->version) + SYSTEM_DE_FSCRYPT_POLICY;
+ 		memcpy(policy_type, policy_type_string.data(), policy_type_string.size());
+ 		return true;
+ 	}
+-	if (!lookup_ref_key_internal(s_de_policies, descriptor, size, hex_size, &user_id)) {
+-		if (!lookup_ref_key_internal(s_ce_policies, descriptor, size, hex_size, &user_id)) return false;
++	if (!lookup_ref_key_internal(GetDePolicies(), descriptor, size, hex_size, &user_id)) {
++		if (!lookup_ref_key_internal(GetCePolicies(), descriptor, size, hex_size, &user_id)) return false;
+ 		else policy_type_string = std::to_string(fep->version) + USER_CE_FSCRYPT_POLICY + std::to_string(user_id);
+ 
+ 	} else policy_type_string = std::to_string(fep->version) + USER_DE_FSCRYPT_POLICY + std::to_string(user_id);
+@@ -155,7 +155,7 @@ extern "C" bool lookup_ref_tar(fscrypt_policy *fep, uint8_t* policy) {
+ 	char policy_hex[hex_size];
+ 	bytes_to_hex(descriptor, size, policy_hex);
+ 	if (policy_type_string.substr(1, 2) == SYSTEM_DE_KEY) {
+-		memcpy(policy, de_key_raw_ref.data(), de_key_raw_ref.size());
++		memcpy(policy, GetDeKeyRawRef().data(), GetDeKeyRawRef().size());
+ 		return true;
+ 	}
+ 
+@@ -163,14 +163,14 @@ extern "C" bool lookup_ref_tar(fscrypt_policy *fep, uint8_t* policy) {
+ 
+ 	if (policy_type_string.substr(1, 1) == USER_DE_KEY) {
+ 		userid_t user_id = std::stoi(policy_type_string.substr(3, 4).c_str());
+-		if (lookup_key_ref(s_de_policies, user_id, &raw_ref)) {
++		if (lookup_key_ref(GetDePolicies(), user_id, &raw_ref)) {
+ 			memcpy(policy, raw_ref.data(), raw_ref.size());
+ 		} else {
+ 			return false;
+ 		}
+ 	} else if (policy_type_string.substr(1, 1) == USER_CE_KEY) {
+ 		userid_t user_id = std::stoi(policy_type_string.substr(3, 4).c_str());
+-		if (lookup_key_ref(s_ce_policies, user_id, &raw_ref)) {
++		if (lookup_key_ref(GetCePolicies(), user_id, &raw_ref)) {
+ 			memcpy(policy, raw_ref.data(), raw_ref.size());
+ 		} else {
+ 			return false;
+@@ -440,7 +440,8 @@ namespace keystore {
+ 	* https://android.googlesource.com/platform/frameworks/base/+/android-8.0.0_r23/services/core/java/com/android/server/locksettings/SyntheticPasswordManager.java#867
+ 	* returning an empty string indicates an error */
+ 	std::string unwrapSyntheticPasswordBlob(const std::string& spblob_path, const std::string& handle_str, const userid_t user_id,
+-		const void* application_id, const size_t application_id_size, uint32_t auth_token_len) {
++		const void* application_id, const size_t application_id_size, uint32_t auth_token_len,
++		bool forced_operation) {
+ 		printf("Attempting to unwrap synthetic password blob\n");
+ 		std::string disk_decryption_secret_key = "";
+ 
+@@ -518,7 +519,7 @@ namespace keystore {
+ 			auto keyResponse = std::get<ks2::KeyEntryResponse>(response);
+ 			ks2::CreateOperationResponse encOperationResponse;
+ 			auto begin_rc = keyResponse.iSecurityLevel->createOperation(
+-				keyResponse.metadata.key, begin_params.vector_data(), true,
++				keyResponse.metadata.key, begin_params.vector_data(), forced_operation,
+ 				&encOperationResponse);
+ 			if (!begin_rc.isOk()) {
+ 				printf("Begin Operation failed\n");
+@@ -639,7 +640,13 @@ bool Decrypt_CE_storage(const userid_t user_id, int token, const std::string& se
+ 
+ // /* Decrypt_User_Synth_Pass is the TWRP C++ equivalent to spBasedDoVerifyCredential
+ //  * https://android.googlesource.com/platform/frameworks/base/+/android-8.0.0_r23/services/core/java/com/android/server/locksettings/LockSettingsService.java#1998 */
+-bool Decrypt_User_Synth_Pass(const userid_t user_id, const std::string& Password) {
++static bool Decrypt_User_Synth_Pass_Impl(const userid_t user_id,
++		const std::string& Password, bool h40_current_only) {
++	if (h40_current_only &&
++		(user_id != 0 || Password.empty() || Password == "!")) {
++		printf("[H40 V51 PARENT] refusing invalid current-only synthetic-password request\n");
++		return false;
++	}
+ 	printf("Attempting to decrypt user's synthetic password\n");
+ 	bool retval = false;
+ 	void* weaver_key = NULL;
+@@ -770,12 +777,13 @@ bool Decrypt_User_Synth_Pass(const userid_t user_id, const std::string& Password
+ 			}
+ 			android::hardware::hidl_vec<uint8_t> gk_pwd_token_hidl;
+ 			GKResponse gkResponse;
++			bool authorization_failed = false;
+ 			gk_pwd_token_hidl.setToExternal(const_cast<uint8_t *>((const uint8_t *)gk_pwd_token), SHA512_DIGEST_LENGTH);
+ 			android::hardware::Return<void> hwRet =
+ 				gk_device->verify(fakeUid(user_id), 0 /* challenge */,
+ 								  pwd_handle_hidl,
+ 								  gk_pwd_token_hidl,
+-								  [&gkResponse]
++								  [&gkResponse, &authorization_failed]
+ 									// []
+ 									(const android::hardware::gatekeeper::V1_0::GatekeeperResponse &rsp) {
+ 										// ret = static_cast<int>(rsp.code); // propagate errors
+@@ -795,16 +803,22 @@ bool Decrypt_User_Synth_Pass(const userid_t user_id, const std::string& Password
+ 											::ndk::SpAIBinder binder(authzAIBinder);
+ 											auto service = aidl::android::security::authorization::IKeystoreAuthorization::fromBinder(binder);
+ 											if (service == NULL) {
+-												printf("error: could not connect to keystore service\n");
+-												ALOGE("error: could not connect to keystore service\n");
++												printf("error: could not connect to keystore authorization service\n");
++												ALOGE("error: could not connect to keystore authorization service\n");
++												authorization_failed = true;
++												return;
+ 											}
+ 											auto binder_result = service->addAuthToken(authToken);
++											if (!binder_result.isOk()) {
++												ALOGE("error: could not publish Gatekeeper auth token\n");
++												authorization_failed = true;
++											}
+ 										}
+ 									}
+ 								 );
+ 			free(gk_pwd_token);
+-			if (!hwRet.isOk()) {
+-				printf("gatekeeper verification failed\n");
++			if (!hwRet.isOk() || authorization_failed) {
++				printf("gatekeeper verification or auth-token publication failed\n");
+ 				return Free_Return(retval, weaver_key, &pwd);
+ 			}
+ 		}
+@@ -812,14 +826,27 @@ bool Decrypt_User_Synth_Pass(const userid_t user_id, const std::string& Password
+ 	// Now we will handle https://android.googlesource.com/platform/frameworks/base/+/android-8.0.0_r23/services/core/java/com/android/server/locksettings/SyntheticPasswordManager.java#816
+ 	// Plus we will include the last bit that computes the disk decrypt key found in:
+ 	// https://android.googlesource.com/platform/frameworks/base/+/android-8.0.0_r23/services/core/java/com/android/server/locksettings/SyntheticPasswordManager.java#153
+-	secret = android::keystore::unwrapSyntheticPasswordBlob(spblob_path, handle_str, user_id, (const void*)&application_id[0], 
+-		PASSWORD_TOKEN_SIZE + SHA512_DIGEST_LENGTH, auth_token_len);
++	// Preserve TeamWin's canonical forced operation for every ordinary call.
++	// H.40's current-only path must not require the req_forced_op SELinux
++	// permission, so only that exact selector reaches Keystore2 with false.
++	const bool forced_operation = !h40_current_only;
++	if (h40_current_only) {
++		printf("[H40 V51 FORCEDOP] requesting an ordinary Keystore2 operation\n");
++	}
++	secret = android::keystore::unwrapSyntheticPasswordBlob(spblob_path, handle_str, user_id,
++		(const void*)&application_id[0], PASSWORD_TOKEN_SIZE + SHA512_DIGEST_LENGTH,
++		auth_token_len, forced_operation);
+ 	if (!secret.size()) {
+ 		printf("failed to unwrapSyntheticPasswordBlob\n");
+ 		return Free_Return(retval, weaver_key, &pwd);
+ 	}
+ 
+-	if (!Decrypt_CE_storage(user_id, token, secret)) {
++	if (h40_current_only) {
++		if (!fscrypt_unlock_user0_key_current_only(secret)) {
++			printf("[H40 V51 PARENT] guarded current-only CE key install failed\n");
++			return Free_Return(retval, weaver_key, &pwd);
++		}
++	} else if (!Decrypt_CE_storage(user_id, token, secret)) {
+ 		return Free_Return(retval, weaver_key, &pwd);
+ 	}
+ 
+@@ -827,6 +854,19 @@ bool Decrypt_User_Synth_Pass(const userid_t user_id, const std::string& Password
+ 	return Free_Return(retval, weaver_key, &pwd);
+ }
+ 
++bool Decrypt_User_Synth_Pass(const userid_t user_id, const std::string& Password) {
++	return Decrypt_User_Synth_Pass_Impl(user_id, Password, false);
++}
++
++extern "C" bool Decrypt_User_H40_Modern(const userid_t user_id,
++		const std::string& Password) {
++	if (user_id != 0 || Password.empty() || Password == "!") {
++		printf("[H40 V51 PARENT] refusing non-user0 or empty/default credential\n");
++		return false;
++	}
++	return Decrypt_User_Synth_Pass_Impl(user_id, Password, true);
++}
++
+ extern "C" int Get_Password_Type(const userid_t user_id, std::string& filename) {
+ 	struct stat st;
+ 	char spblob_path_char[PATH_MAX];
+diff --git a/Decrypt.h b/Decrypt.h
+index ff926dc..c807b6b 100755
+--- a/Decrypt.h
++++ b/Decrypt.h
+@@ -38,6 +38,7 @@ namespace keystore {
+     int Get_Password_Type(const userid_t user_id, std::string& filename);
+     bool Decrypt_DE();
+     bool Decrypt_User(const userid_t user_id, const std::string& Password);
++    bool Decrypt_User_H40_Modern(const userid_t user_id, const std::string& Password);
+ }
+ }
+ __END_DECLS
+diff --git a/FsCrypt.cpp b/FsCrypt.cpp
+index 7505e56..69cc8d3 100644
+--- a/FsCrypt.cpp
++++ b/FsCrypt.cpp
+@@ -70,7 +70,7 @@ using android::fs_mgr::GetEntryForMountPoint;
+ using android::vold::BuildDataPath;
+ using android::vold::IsDotOrDotDot;
+ using android::vold::IsFilesystemSupported;
+-using android::vold::kEmptyAuthentication;
++using android::vold::GetEmptyAuthentication;
+ using android::vold::KeyBuffer;
+ using android::vold::KeyGeneration;
+ using android::vold::retrieveKey;
+@@ -84,27 +84,64 @@ using namespace android::dm;
+ 
+ namespace {
+ 
+-const std::string device_key_dir = std::string() + DATA_MNT_POINT + fscrypt_unencrypted_folder;
+-const std::string device_key_path = device_key_dir + "/key";
+-const std::string device_key_temp = device_key_dir + "/temp";
++const std::string& GetDeviceKeyDir() {
++    static auto* value =
++            new std::string(std::string() + DATA_MNT_POINT + fscrypt_unencrypted_folder);
++    return *value;
++}
++
++const std::string& GetDeviceKeyPath() {
++    static auto* value = new std::string(GetDeviceKeyDir() + "/key");
++    return *value;
++}
++
++const std::string& GetDeviceKeyTemp() {
++    static auto* value = new std::string(GetDeviceKeyDir() + "/temp");
++    return *value;
++}
++
++const std::string& GetUserKeyDir() {
++    static auto* value = new std::string(std::string() + DATA_MNT_POINT + "/misc/vold/user_keys");
++    return *value;
++}
++
++const std::string& GetUserKeyTemp() {
++    static auto* value = new std::string(GetUserKeyDir() + "/temp");
++    return *value;
++}
+ 
+-const std::string user_key_dir = std::string() + DATA_MNT_POINT + "/misc/vold/user_keys";
+-const std::string user_key_temp = user_key_dir + "/temp";
+-const std::string prepare_subdirs_path = "/system/bin/vold_prepare_subdirs";
++const std::string& GetPrepareSubdirsPath() {
++    static auto* value = new std::string("/system/bin/vold_prepare_subdirs");
++    return *value;
++}
+ 
+-const std::string systemwide_volume_key_dir =
+-    std::string() + DATA_MNT_POINT + "/misc/vold/volume_keys";
++const std::string& GetSystemwideVolumeKeyDir() {
++    static auto* value =
++            new std::string(std::string() + DATA_MNT_POINT + "/misc/vold/volume_keys");
++    return *value;
++}
+ 
+-// Some users are ephemeral, don't try to wipe their keys from disk
+-std::set<userid_t> s_ephemeral_users;
++std::set<userid_t>& GetEphemeralUsers() {
++    static auto* users = new std::set<userid_t>();
++    return *users;
++}
+ 
+ }  // namespace
+ 
+-// Map user ids to encryption policies
+-std::map<userid_t, EncryptionPolicy> s_de_policies;
+-std::map<userid_t, EncryptionPolicy> s_ce_policies;
+-std::string de_key_raw_ref;
+-bool retry = true;
++std::map<userid_t, EncryptionPolicy>& GetDePolicies() {
++    static auto* policies = new std::map<userid_t, EncryptionPolicy>();
++    return *policies;
++}
++
++std::map<userid_t, EncryptionPolicy>& GetCePolicies() {
++    static auto* policies = new std::map<userid_t, EncryptionPolicy>();
++    return *policies;
++}
++
++std::string& GetDeKeyRawRef() {
++    static auto* raw_ref = new std::string();
++    return *raw_ref;
++}
+ 
+ // Returns KeyGeneration suitable for key as described in EncryptionOptions
+ static KeyGeneration makeGen(const EncryptionOptions& options) {
+@@ -120,11 +157,11 @@ static const char* escape_empty(const std::string& value) {
+ }
+ 
+ static std::string get_de_key_path(userid_t user_id) {
+-    return StringPrintf("%s/de/%d", user_key_dir.c_str(), user_id);
++    return StringPrintf("%s/de/%d", GetUserKeyDir().c_str(), user_id);
+ }
+ 
+ static std::string get_ce_key_directory_path(userid_t user_id) {
+-    return StringPrintf("%s/ce/%d", user_key_dir.c_str(), user_id);
++    return StringPrintf("%s/ce/%d", GetUserKeyDir().c_str(), user_id);
+ }
+ 
+ // Returns the keys newest first
+@@ -236,13 +273,13 @@ static bool IsEmmcStorage(const std::string& blk_device) {
+ 
+ // Retrieve the options to use for encryption policies on the /data filesystem.
+ static bool get_data_file_encryption_options(EncryptionOptions* options) {
+-    if (fstab_default.empty()) {
+-        if (!ReadDefaultFstab(&fstab_default)) {
++    if (GetFstabDefault().empty()) {
++        if (!ReadDefaultFstab(&GetFstabDefault())) {
+             PLOG(ERROR) << "Failed to open default fstab";
+             return false;
+         }
+     }
+-    auto entry = GetEntryForMountPoint(&fstab_default, DATA_MNT_POINT);
++    auto entry = GetEntryForMountPoint(&GetFstabDefault(), DATA_MNT_POINT);
+     if (entry == nullptr) {
+         LOG(ERROR) << "No mount point entry for " << DATA_MNT_POINT;
+         return false;
+@@ -258,10 +295,14 @@ static bool get_data_file_encryption_options(EncryptionOptions* options) {
+                       "this flag from the device's fstab";
+         return false;
+     }
+-    if (options->version == 1 || !retry) {
+-        options->use_hw_wrapped_key =
+-            GetEntryForMountPoint(&fstab_default, DATA_MNT_POINT)->fs_mgr_flags.wrapped_key;
++    const bool parsed_wrapped_key = options->use_hw_wrapped_key;
++    if (options->version == 1 && entry->fs_mgr_flags.wrapped_key) {
++        options->use_hw_wrapped_key = true;
+     }
++    LOG(INFO) << "[H40 FSCRYPTMODE] data options: version=" << options->version
++              << " parsedWrapped=" << parsed_wrapped_key
++              << " legacyFstabWrapped=" << entry->fs_mgr_flags.wrapped_key
++              << " effectiveWrapped=" << options->use_hw_wrapped_key;
+     return true;
+ }
+ 
+@@ -303,19 +344,19 @@ static bool get_volume_file_encryption_options(EncryptionOptions* options) {
+ }
+ 
+ bool is_metadata_wrapped_key_supported() {
+-    return GetEntryForMountPoint(&fstab_default, METADATA_MNT_POINT)->fs_mgr_flags.wrapped_key;
++    return GetEntryForMountPoint(&GetFstabDefault(), METADATA_MNT_POINT)->fs_mgr_flags.wrapped_key;
+ }
+ 
+ static bool read_and_install_user_ce_key(userid_t user_id,
+                                          const android::vold::KeyAuthentication& auth) {
+-    if (s_ce_policies.count(user_id) != 0) return true;
++    if (GetCePolicies().count(user_id) != 0) return true;
+     EncryptionOptions options;
+     if (!get_data_file_encryption_options(&options)) return false;
+     KeyBuffer ce_key;
+     if (!read_and_fixate_user_ce_key(user_id, auth, &ce_key)) return false;
+     EncryptionPolicy ce_policy;
+     if (!install_storage_key(DATA_MNT_POINT, options, ce_key, &ce_policy)) return false;
+-    s_ce_policies[user_id] = ce_policy;
++    GetCePolicies()[user_id] = ce_policy;
+     LOG(INFO) << "Installed ce key for user " << user_id;
+     return true;
+ }
+@@ -348,28 +389,28 @@ static bool create_and_install_user_keys(userid_t user_id, bool create_ephemeral
+     if (!generateStorageKey(makeGen(options), &ce_key)) return false;
+     if (create_ephemeral) {
+         // If the key should be created as ephemeral, don't store it.
+-        s_ephemeral_users.insert(user_id);
++        GetEphemeralUsers().insert(user_id);
+     } else {
+         auto const directory_path = get_ce_key_directory_path(user_id);
+         if (!prepare_dir(directory_path, 0700, AID_ROOT, AID_ROOT)) return false;
+         auto const paths = get_ce_key_paths(directory_path);
+         std::string ce_key_path;
+         if (!get_ce_key_new_path(directory_path, paths, &ce_key_path)) return false;
+-        if (!android::vold::storeKeyAtomically(ce_key_path, user_key_temp, kEmptyAuthentication,
++        if (!android::vold::storeKeyAtomically(ce_key_path, GetUserKeyTemp(), GetEmptyAuthentication(),
+                                                ce_key))
+             return false;
+         fixate_user_ce_key(directory_path, ce_key_path, paths);
+         // Write DE key second; once this is written, all is good.
+-        if (!android::vold::storeKeyAtomically(get_de_key_path(user_id), user_key_temp,
+-                                               kEmptyAuthentication, de_key))
++        if (!android::vold::storeKeyAtomically(get_de_key_path(user_id), GetUserKeyTemp(),
++                                               GetEmptyAuthentication(), de_key))
+             return false;
+     }
+     EncryptionPolicy de_policy;
+     if (!install_storage_key(DATA_MNT_POINT, options, de_key, &de_policy)) return false;
+-    s_de_policies[user_id] = de_policy;
++    GetDePolicies()[user_id] = de_policy;
+     EncryptionPolicy ce_policy;
+     if (!install_storage_key(DATA_MNT_POINT, options, ce_key, &ce_policy)) return false;
+-    s_ce_policies[user_id] = ce_policy;
++    GetCePolicies()[user_id] = ce_policy;
+     LOG(DEBUG) << "Created keys for user " << user_id;
+     return true;
+ }
+@@ -395,7 +436,7 @@ static bool is_numeric(const char* name) {
+ static bool load_all_de_keys() {
+     EncryptionOptions options;
+     if (!get_data_file_encryption_options(&options)) return false;
+-    auto de_dir = user_key_dir + "/de";
++    auto de_dir = GetUserKeyDir() + "/de";
+     auto dirp = std::unique_ptr<DIR, int (*)(DIR*)>(opendir(de_dir.c_str()), closedir);
+     if (!dirp) {
+         PLOG(ERROR) << "Unable to read de key directory";
+@@ -420,10 +461,15 @@ static bool load_all_de_keys() {
+         auto key_path = de_dir + "/" + entry->d_name;
+         KeyBuffer de_key;
+         LOG(INFO) << "fscrypt::load_all_de_keys::retrieveKey";
+-        if (!retrieveKey(key_path, kEmptyAuthentication, &de_key)) return false;
++        if (!retrieveKey(key_path, GetEmptyAuthentication(), &de_key)) return false;
+         EncryptionPolicy de_policy;
+         if (!install_storage_key(DATA_MNT_POINT, options, de_key, &de_policy)) return false;
+-        auto ret = s_de_policies.insert({user_id, de_policy});
++        auto& de_policies = GetDePolicies();
++        LOG(INFO) << "[H40 FSCRYPTLAZY] DE policies ready: user=" << user_id
++                  << " size=" << de_policies.size();
++        auto ret = de_policies.insert({user_id, de_policy});
++        LOG(INFO) << "[H40 FSCRYPTLAZY] DE policy insertion complete: user=" << user_id
++                  << " inserted=" << ret.second << " size=" << de_policies.size();
+         if (!ret.second && ret.first->second != de_policy) {
+             LOG(ERROR) << "DE policy for user" << user_id << " changed";
+             return false;
+@@ -440,7 +486,7 @@ static bool load_all_de_keys() {
+ // Attempt to reinstall CE keys for users that we think are unlocked.
+ static bool try_reload_ce_keys() {
+     LOG(INFO) << "try_reload_ce_keys";
+-    for (const auto& it : s_ce_policies) {
++    for (const auto& it : GetCePolicies()) {
+         if (!android::vold::reloadKeyFromSessionKeyring(DATA_MNT_POINT, it.second)) {
+             LOG(ERROR) << "Failed to load CE key from session keyring for user " << it.first;
+             return false;
+@@ -456,22 +502,18 @@ bool fscrypt_initialize_systemwide_keys() {
+     if (!get_data_file_encryption_options(&options)) return false;
+ 
+     KeyBuffer device_key;
+-install:
+-    if (!retrieveOrGenerateKey(device_key_path, device_key_temp, kEmptyAuthentication,
++    if (!retrieveOrGenerateKey(GetDeviceKeyPath(), GetDeviceKeyTemp(), GetEmptyAuthentication(),
+                                makeGen(options), &device_key))
+         return false;
+ 
+     EncryptionPolicy device_policy;
+     if (!install_storage_key(DATA_MNT_POINT, options, device_key, &device_policy)) {
+-        if (retry) {
+-            printf("Trying %s wrappedkey\n", options.use_hw_wrapped_key ? "without" : "with");
+-            GetEntryForMountPoint(&fstab_default, DATA_MNT_POINT)->fs_mgr_flags.wrapped_key =
+-                options.use_hw_wrapped_key = !options.use_hw_wrapped_key;
+-            retry = false;
+-            goto install;
+-        }
++        LOG(ERROR) << "[H40 FSCRYPTMODE] system key install failed without mode fallback: wrapped="
++                   << options.use_hw_wrapped_key;
+         return false;
+     }
++    LOG(INFO) << "[H40 FSCRYPTMODE] system key installed without mode fallback: wrapped="
++              << options.use_hw_wrapped_key;
+ 
+     std::string options_string;
+     if (!OptionsToString(device_policy.options, &options_string)) {
+@@ -482,7 +524,7 @@ install:
+     if (!android::vold::writeStringToFile(options_string, options_filename)) return false;
+ 
+     std::string ref_filename = std::string(DATA_MNT_POINT) + fscrypt_key_ref;
+-    de_key_raw_ref = device_policy.key_raw_ref;
++    GetDeKeyRawRef() = device_policy.key_raw_ref;
+     if (!android::vold::writeStringToFile(device_policy.key_raw_ref, ref_filename)) return false;
+     LOG(INFO) << "Wrote system DE key reference to:" << ref_filename;
+ 
+@@ -501,9 +543,9 @@ install:
+ bool fscrypt_init_user0() {
+     LOG(INFO) << "fscrypt_init_user0";
+     if (fscrypt_is_native()) {
+-        if (!prepare_dir(user_key_dir, 0700, AID_ROOT, AID_ROOT)) return false;
+-        if (!prepare_dir(user_key_dir + "/ce", 0700, AID_ROOT, AID_ROOT)) return false;
+-        if (!prepare_dir(user_key_dir + "/de", 0700, AID_ROOT, AID_ROOT)) return false;
++        if (!prepare_dir(GetUserKeyDir(), 0700, AID_ROOT, AID_ROOT)) return false;
++        if (!prepare_dir(GetUserKeyDir() + "/ce", 0700, AID_ROOT, AID_ROOT)) return false;
++        if (!prepare_dir(GetUserKeyDir() + "/de", 0700, AID_ROOT, AID_ROOT)) return false;
+         if (!android::vold::pathExists(get_de_key_path(0))) {
+             if (!create_and_install_user_keys(0, false)) return false;
+         }
+@@ -541,7 +583,7 @@ bool fscrypt_vold_create_user_key(userid_t user_id, int serial, bool ephemeral)
+         return true;
+     }
+     // FIXME test for existence of key that is not loaded yet
+-    if (s_ce_policies.count(user_id) != 0) {
++    if (GetCePolicies().count(user_id) != 0) {
+         LOG(ERROR) << "Already exists, can't fscrypt_vold_create_user_key for " << user_id
+                    << " serial " << serial;
+         // FIXME should we fail the command?
+@@ -578,11 +620,11 @@ static bool evict_ce_key(userid_t user_id) {
+     bool success = true;
+     EncryptionPolicy policy;
+     // If we haven't loaded the CE key, no need to evict it.
+-    if (lookup_policy(s_ce_policies, user_id, &policy)) {
++    if (lookup_policy(GetCePolicies(), user_id, &policy)) {
+         success &= android::vold::evictKey(DATA_MNT_POINT, policy);
+         drop_caches_if_needed();
+     }
+-    s_ce_policies.erase(user_id);
++    GetCePolicies().erase(user_id);
+     return success;
+ }
+ 
+@@ -594,12 +636,12 @@ bool fscrypt_destroy_user_key(userid_t user_id) {
+     bool success = true;
+     success &= evict_ce_key(user_id);
+     EncryptionPolicy de_policy;
+-    success &= lookup_policy(s_de_policies, user_id, &de_policy) &&
++    success &= lookup_policy(GetDePolicies(), user_id, &de_policy) &&
+                android::vold::evictKey(DATA_MNT_POINT, de_policy);
+-    s_de_policies.erase(user_id);
+-    auto it = s_ephemeral_users.find(user_id);
+-    if (it != s_ephemeral_users.end()) {
+-        s_ephemeral_users.erase(it);
++    GetDePolicies().erase(user_id);
++    auto it = GetEphemeralUsers().find(user_id);
++    if (it != GetEphemeralUsers().end()) {
++        GetEphemeralUsers().erase(it);
+     } else {
+         for (auto const path : get_ce_key_paths(get_ce_key_directory_path(user_id))) {
+             success &= android::vold::destroyKey(path);
+@@ -661,18 +703,198 @@ static std::optional<android::vold::KeyAuthentication> authentication_from_hex(
+     std::string secret;
+     if (!parse_hex(secret_hex, &secret)) return std::optional<android::vold::KeyAuthentication>();
+     if (secret.empty()) {
+-        return kEmptyAuthentication;
++        return GetEmptyAuthentication();
+     } else {
+         return android::vold::KeyAuthentication(secret);
+     }
+ }
+ 
++// H.40's ColorOS key directory is accepted only in this exact direct-AES
++// shape.  Every path component is opened relative to its already-validated
++// parent with O_NOFOLLOW; the guard never creates, renames, or unlinks files.
++static bool h40_open_directory_at(int parent_fd, const char* name,
++                                  android::base::unique_fd* result) {
++    const int fd = TEMP_FAILURE_RETRY(
++            openat(parent_fd, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
++    if (fd < 0) {
++        PLOG(ERROR) << "[H40 V51 CURRENT] cannot open directory component " << name;
++        return false;
++    }
++    struct stat status = {};
++    if (fstat(fd, &status) != 0 || !S_ISDIR(status.st_mode)) {
++        PLOG(ERROR) << "[H40 V51 CURRENT] invalid directory component " << name;
++        close(fd);
++        return false;
++    }
++    result->reset(fd);
++    return true;
++}
++
++static bool h40_directory_has_exact_entries(int directory_fd,
++                                             const std::set<std::string>& expected,
++                                             const char* label) {
++    const int scan_fd = TEMP_FAILURE_RETRY(
++            fcntl(directory_fd, F_DUPFD_CLOEXEC, 0));
++    if (scan_fd < 0) {
++        PLOG(ERROR) << "[H40 V51 CURRENT] cannot duplicate " << label;
++        return false;
++    }
++    auto directory = std::unique_ptr<DIR, int (*)(DIR*)>(fdopendir(scan_fd), closedir);
++    if (!directory) {
++        PLOG(ERROR) << "[H40 V51 CURRENT] cannot enumerate " << label;
++        close(scan_fd);
++        return false;
++    }
++
++    std::set<std::string> seen;
++    errno = 0;
++    while (dirent* entry = readdir(directory.get())) {
++        const std::string name(entry->d_name);
++        if (name == "." || name == "..") continue;
++        if (expected.count(name) == 0 || !seen.insert(name).second) {
++            LOG(ERROR) << "[H40 V51 CURRENT] unexpected entry " << label << "/" << name;
++            return false;
++        }
++        errno = 0;
++    }
++    if (errno != 0) {
++        PLOG(ERROR) << "[H40 V51 CURRENT] failed while enumerating " << label;
++        return false;
++    }
++    if (seen != expected) {
++        LOG(ERROR) << "[H40 V51 CURRENT] missing required entry in " << label;
++        return false;
++    }
++    return true;
++}
++
++static bool h40_validate_regular_file_at(int directory_fd, const char* name,
++                                         off_t expected_size,
++                                         const char* expected_contents) {
++    android::base::unique_fd fd(TEMP_FAILURE_RETRY(
++            openat(directory_fd, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)));
++    if (fd < 0) {
++        PLOG(ERROR) << "[H40 V51 CURRENT] cannot open " << name;
++        return false;
++    }
++    struct stat status = {};
++    if (fstat(fd, &status) != 0 || !S_ISREG(status.st_mode) ||
++        status.st_nlink != 1 || status.st_size != expected_size) {
++        LOG(ERROR) << "[H40 V51 CURRENT] malformed " << name
++                   << ": mode=" << status.st_mode
++                   << " links=" << status.st_nlink << " size=" << status.st_size;
++        return false;
++    }
++
++    std::string contents(static_cast<size_t>(expected_size), '\0');
++    size_t offset = 0;
++    while (offset < contents.size()) {
++        const ssize_t count = TEMP_FAILURE_RETRY(
++                read(fd.get(), &contents[offset], contents.size() - offset));
++        if (count <= 0) {
++            PLOG(ERROR) << "[H40 V51 CURRENT] short read from " << name;
++            return false;
++        }
++        offset += static_cast<size_t>(count);
++    }
++    char extra = 0;
++    if (TEMP_FAILURE_RETRY(read(fd.get(), &extra, 1)) != 0) {
++        LOG(ERROR) << "[H40 V51 CURRENT] grew while reading " << name;
++        return false;
++    }
++    if (expected_contents != nullptr && contents != expected_contents) {
++        LOG(ERROR) << "[H40 V51 CURRENT] invalid contents in " << name;
++        return false;
++    }
++    return true;
++}
++
++static bool validate_h40_modern_user0_ce_layout() {
++    android::base::unique_fd root(TEMP_FAILURE_RETRY(
++            open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)));
++    if (root < 0) {
++        PLOG(ERROR) << "[H40 V51 CURRENT] cannot open filesystem root";
++        return false;
++    }
++
++    android::base::unique_fd data, misc, vold, user_keys, ce, user0, current;
++    if (!h40_open_directory_at(root.get(), "data", &data) ||
++        !h40_open_directory_at(data.get(), "misc", &misc) ||
++        !h40_open_directory_at(misc.get(), "vold", &vold) ||
++        !h40_open_directory_at(vold.get(), "user_keys", &user_keys) ||
++        !h40_open_directory_at(user_keys.get(), "ce", &ce) ||
++        !h40_open_directory_at(ce.get(), "0", &user0)) {
++        return false;
++    }
++    if (!h40_directory_has_exact_entries(user0.get(), {"current"},
++                                         "/data/misc/vold/user_keys/ce/0")) {
++        return false;
++    }
++    if (!h40_open_directory_at(user0.get(), "current", &current) ||
++        !h40_directory_has_exact_entries(current.get(), {"encrypted_key", "version"},
++                                         "/data/misc/vold/user_keys/ce/0/current")) {
++        return false;
++    }
++    if (!h40_validate_regular_file_at(current.get(), "version", 1, "1")) return false;
++    // 12-byte GCM nonce + 64-byte fscrypt key + 16-byte GCM tag.
++    if (!h40_validate_regular_file_at(current.get(), "encrypted_key", 92, nullptr)) return false;
++    return true;
++}
++
++bool fscrypt_unlock_user0_key_current_only(const std::string& secret_hex) {
++    constexpr userid_t kUser = 0;
++    LOG(INFO) << "[H40 V51 CURRENT] guarded parent-process CE install";
++    if (!fscrypt_is_native()) {
++        LOG(ERROR) << "[H40 V51 CURRENT] native fscrypt is not active";
++        return false;
++    }
++    if (GetCePolicies().count(kUser) != 0) {
++        LOG(ERROR) << "[H40 V51 CURRENT] user 0 CE policy already exists";
++        return false;
++    }
++    if (!validate_h40_modern_user0_ce_layout()) return false;
++
++    auto auth = authentication_from_hex(secret_hex);
++    if (!auth || auth->secret.empty()) {
++        LOG(ERROR) << "[H40 V51 CURRENT] refusing empty or malformed SP-derived secret";
++        return false;
++    }
++    EncryptionOptions options;
++    if (!get_data_file_encryption_options(&options) || options.use_hw_wrapped_key) {
++        LOG(ERROR) << "[H40 V51 CURRENT] layout requires a non-wrapped data key";
++        return false;
++    }
++
++    // Re-run the no-follow shape guard immediately before retrieveKey().  With
++    // nonempty authentication and no Keymaster/secdiscardable files, the exact
++    // accepted layout can take only KeyStorage's read-only direct AES-GCM path.
++    if (!validate_h40_modern_user0_ce_layout()) return false;
++    const std::string key_path =
++            get_ce_key_current_path(get_ce_key_directory_path(kUser));
++    KeyBuffer ce_key;
++    if (!android::vold::retrieveKey(key_path, *auth, &ce_key)) return false;
++    if (ce_key.size() != FSCRYPT_MAX_KEY_SIZE) {
++        LOG(ERROR) << "[H40 V51 CURRENT] unexpected recovered CE key size " << ce_key.size();
++        return false;
++    }
++
++    EncryptionPolicy ce_policy;
++    if (!install_storage_key(DATA_MNT_POINT, options, ce_key, &ce_policy)) return false;
++    const auto inserted = GetCePolicies().emplace(kUser, ce_policy);
++    if (!inserted.second) {
++        LOG(ERROR) << "[H40 V51 CURRENT] CE policy insertion raced or duplicated";
++        return false;
++    }
++    LOG(INFO) << "[H40 V51 CURRENT] installed user 0 CE key without key-directory mutation";
++    return true;
++}
++
+ static std::string volkey_path(const std::string& misc_path, const std::string& volume_uuid) {
+     return misc_path + "/vold/volume_keys/" + volume_uuid + "/default";
+ }
+ 
+ static std::string volume_secdiscardable_path(const std::string& volume_uuid) {
+-    return systemwide_volume_key_dir + "/" + volume_uuid + "/secdiscardable";
++    return GetSystemwideVolumeKeyDir() + "/" + volume_uuid + "/secdiscardable";
+ }
+ 
+ static bool read_or_create_volkey(const std::string& misc_path, const std::string& volume_uuid,
+@@ -709,7 +931,7 @@ static bool destroy_volkey(const std::string& misc_path, const std::string& volu
+ static bool fscrypt_rewrap_user_key(userid_t user_id, int serial,
+                                     const android::vold::KeyAuthentication& retrieve_auth,
+                                     const android::vold::KeyAuthentication& store_auth) {
+-    if (s_ephemeral_users.count(user_id) != 0) return true;
++    if (GetEphemeralUsers().count(user_id) != 0) return true;
+     auto const directory_path = get_ce_key_directory_path(user_id);
+     KeyBuffer ce_key;
+     std::string ce_key_current_path = get_ce_key_current_path(directory_path);
+@@ -718,7 +940,7 @@ static bool fscrypt_rewrap_user_key(userid_t user_id, int serial,
+         // TODO(147732812): Remove this once Locksettingservice is fixed.
+         // Currently it calls fscrypt_clear_user_key_auth with a secret when lockscreen is
+         // changed from swipe to none or vice-versa
+-    } else if (retrieveKey(ce_key_current_path, kEmptyAuthentication, &ce_key)) {
++    } else if (retrieveKey(ce_key_current_path, GetEmptyAuthentication(), &ce_key)) {
+         LOG(INFO) << "Successfully retrieved key with empty auth";
+     } else {
+         LOG(ERROR) << "Failed to retrieve key for user " << user_id;
+@@ -727,7 +949,7 @@ static bool fscrypt_rewrap_user_key(userid_t user_id, int serial,
+     auto const paths = get_ce_key_paths(directory_path);
+     std::string ce_key_path;
+     if (!get_ce_key_new_path(directory_path, paths, &ce_key_path)) return false;
+-    if (!android::vold::storeKeyAtomically(ce_key_path, user_key_temp, store_auth, ce_key))
++    if (!android::vold::storeKeyAtomically(ce_key_path, GetUserKeyTemp(), store_auth, ce_key))
+         return false;
+     return true;
+ }
+@@ -737,7 +959,7 @@ bool fscrypt_add_user_key_auth(userid_t user_id, int serial, const std::string&
+     if (!fscrypt_is_native()) return true;
+     auto auth = authentication_from_hex(secret_hex);
+     if (!auth) return false;
+-    return fscrypt_rewrap_user_key(user_id, serial, kEmptyAuthentication, *auth);
++    return fscrypt_rewrap_user_key(user_id, serial, GetEmptyAuthentication(), *auth);
+ }
+ 
+ bool fscrypt_clear_user_key_auth(userid_t user_id, int serial, const std::string& secret_hex) {
+@@ -745,13 +967,13 @@ bool fscrypt_clear_user_key_auth(userid_t user_id, int serial, const std::string
+     if (!fscrypt_is_native()) return true;
+     auto auth = authentication_from_hex(secret_hex);
+     if (!auth) return false;
+-    return fscrypt_rewrap_user_key(user_id, serial, *auth, kEmptyAuthentication);
++    return fscrypt_rewrap_user_key(user_id, serial, *auth, GetEmptyAuthentication());
+ }
+ 
+ bool fscrypt_fixate_newest_user_key_auth(userid_t user_id) {
+     LOG(DEBUG) << "fscrypt_fixate_newest_user_key_auth " << user_id;
+     if (!fscrypt_is_native()) return true;
+-    if (s_ephemeral_users.count(user_id) != 0) return true;
++    if (GetEphemeralUsers().count(user_id) != 0) return true;
+     auto const directory_path = get_ce_key_directory_path(user_id);
+     auto const paths = get_ce_key_paths(directory_path);
+     if (paths.empty()) {
+@@ -764,7 +986,7 @@ bool fscrypt_fixate_newest_user_key_auth(userid_t user_id) {
+ 
+ std::vector<int> fscrypt_get_unlocked_users() {
+     std::vector<int> user_ids;
+-    for (const auto& it : s_ce_policies) {
++    for (const auto& it : GetCePolicies()) {
+         user_ids.push_back(it.first);
+     }
+     return user_ids;
+@@ -774,7 +996,7 @@ std::vector<int> fscrypt_get_unlocked_users() {
+ bool fscrypt_unlock_user_key(userid_t user_id, int serial, const std::string& secret_hex) {
+     LOG(INFO) << "fscrypt_unlock_user_key " << user_id << " serial=" << serial;
+     if (fscrypt_is_native()) {
+-        if (s_ce_policies.count(user_id) != 0) {
++        if (GetCePolicies().count(user_id) != 0) {
+             LOG(WARNING) << "Tried to unlock already-unlocked key for user " << user_id;
+             return true;
+         }
+@@ -821,7 +1043,7 @@ bool fscrypt_lock_user_key(userid_t user_id) {
+ static bool prepare_subdirs(const std::string& action, const std::string& volume_uuid,
+                             userid_t user_id, int flags) {
+     if (0 != android::vold::ForkExecvp(
+-                 std::vector<std::string>{prepare_subdirs_path, action, volume_uuid,
++                 std::vector<std::string>{GetPrepareSubdirsPath(), action, volume_uuid,
+                                           std::to_string(user_id), std::to_string(flags)})) {
+         LOG(ERROR) << "vold_prepare_subdirs failed";
+         return false;
+@@ -864,7 +1086,7 @@ bool fscrypt_prepare_user_storage(const std::string& volume_uuid, userid_t user_
+         if (fscrypt_is_native()) {
+             EncryptionPolicy de_policy;
+             if (volume_uuid.empty()) {
+-                if (!lookup_policy(s_de_policies, user_id, &de_policy)) return false;
++                if (!lookup_policy(GetDePolicies(), user_id, &de_policy)) return false;
+                 if (!EnsurePolicy(de_policy, system_de_path)) return false;
+                 if (!EnsurePolicy(de_policy, misc_de_path)) return false;
+                 if (!EnsurePolicy(de_policy, vendor_de_path)) return false;
+@@ -902,7 +1124,7 @@ bool fscrypt_prepare_user_storage(const std::string& volume_uuid, userid_t user_
+         if (fscrypt_is_native()) {
+             EncryptionPolicy ce_policy;
+             if (volume_uuid.empty()) {
+-                if (!lookup_policy(s_ce_policies, user_id, &ce_policy)) return false;
++                if (!lookup_policy(GetCePolicies(), user_id, &ce_policy)) return false;
+                 if (!EnsurePolicy(ce_policy, system_ce_path)) return false;
+                 if (!EnsurePolicy(ce_policy, misc_ce_path)) return false;
+                 if (!EnsurePolicy(ce_policy, vendor_ce_path)) return false;
+diff --git a/FsCrypt.h b/FsCrypt.h
+index 14a115a..ba8a16c 100644
+--- a/FsCrypt.h
++++ b/FsCrypt.h
+@@ -32,6 +32,9 @@ bool fscrypt_fixate_newest_user_key_auth(userid_t user_id);
+ 
+ std::vector<int> fscrypt_get_unlocked_users();
+ bool fscrypt_unlock_user_key(userid_t user_id, int serial, const std::string& secret);
++// H.40 recovery-only path: exact user-0/current direct-AES layout, no key-dir
++// fixating, creation, rename, upgrade, or user-storage preparation.
++bool fscrypt_unlock_user0_key_current_only(const std::string& secret_hex);
+ bool fscrypt_lock_user_key(userid_t user_id);
+ 
+ bool fscrypt_prepare_user_storage(const std::string& volume_uuid, userid_t user_id, int serial,
+diff --git a/IdleMaint.cpp b/IdleMaint.cpp
+index 8005cf4..ff78a35 100644
+--- a/IdleMaint.cpp
++++ b/IdleMaint.cpp
+@@ -113,7 +113,7 @@ static void addFromVolumeManager(std::list<std::string>* paths, PathTypes path_t
+ 
+ static void addFromFstab(std::list<std::string>* paths, PathTypes path_type) {
+     std::string previous_mount_point;
+-    for (const auto& entry : fstab_default) {
++    for (const auto& entry : GetFstabDefault()) {
+         // Skip raw partitions and swap space.
+         if (entry.fs_type == "emmc" || entry.fs_type == "mtd" || entry.fs_type == "swap") {
+             continue;
+@@ -266,7 +266,7 @@ static int stopGc(const std::list<std::string>& paths) {
+ 
+ static void runDevGcFstab(void) {
+     std::string path;
+-    for (const auto& entry : fstab_default) {
++    for (const auto& entry : GetFstabDefault()) {
+         if (!entry.sysfs_path.empty()) {
+             path = entry.sysfs_path;
+             break;
+diff --git a/KeyStorage.cpp b/KeyStorage.cpp
+index 51fc4f6..6f27e51 100644
+--- a/KeyStorage.cpp
++++ b/KeyStorage.cpp
+@@ -53,7 +53,10 @@ extern "C" {
+ namespace android {
+ namespace vold {
+ 
+-const KeyAuthentication kEmptyAuthentication{""};
++const KeyAuthentication& GetEmptyAuthentication() {
++    static auto* auth = new KeyAuthentication("");
++    return *auth;
++}
+ 
+ static constexpr size_t AES_KEY_BYTES = 32;
+ static constexpr size_t GCM_NONCE_BYTES = 12;
+@@ -96,7 +99,13 @@ struct StorageBindingInfo {
+ };
+ 
+ // Never freed as the dtor is non-trivial.
+-StorageBindingInfo& storage_binding_info = *new StorageBindingInfo;
++static StorageBindingInfo& GetStorageBindingInfo() {
++    // Deliberately never freed, matching the original TeamWin lifetime.
++    // Function-local initialization guarantees the object exists before the
++    // first mutex lock even if namespace-scope dynamic initialization is lost.
++    static StorageBindingInfo* info = new StorageBindingInfo;
++    return *info;
++}
+ 
+ }  // namespace
+ 
+@@ -222,12 +231,18 @@ bool readSecdiscardable(const std::string& filename, std::string* hash) {
+     return true;
+ }
+ 
+-static std::mutex key_upgrade_lock;
++static std::mutex& GetKeyUpgradeLock() {
++    static auto* lock = new std::mutex();
++    return *lock;
++}
+ 
+ // List of key directories that have had their Keymaster key upgraded during
+ // this boot and written to "keymaster_key_blob_upgraded", but replacing the old
+-// key was delayed due to an active checkpoint.  Protected by key_upgrade_lock.
+-static std::vector<std::string> key_dirs_to_commit;
++// key was delayed due to an active checkpoint.  Protected by GetKeyUpgradeLock().
++static std::vector<std::string>& GetKeyDirsToCommit() {
++    static auto* dirs = new std::vector<std::string>();
++    return *dirs;
++}
+ 
+ // Replaces |dir|/keymaster_key_blob with |dir|/keymaster_key_blob_upgraded and
+ // deletes the old key from Keymaster.
+@@ -261,55 +276,55 @@ static std::vector<std::string> key_dirs_to_commit;
+ //         LOG(ERROR) << "Failed to open Keymaster; old keys won't be deleted from Keymaster";
+         // Continue on, but the space in Keymaster used by the old keys won't be freed.
+ //     }
+-//     std::lock_guard<std::mutex> lock(key_upgrade_lock);
+-//     for (auto& dir : key_dirs_to_commit) {
++//     std::lock_guard<std::mutex> lock(GetKeyUpgradeLock());
++//     for (auto& dir : GetKeyDirsToCommit()) {
+ //         LOG(INFO) << "Committing upgraded key " << dir;
+ //         CommitUpgradedKey(keymaster, dir);
+ //     }
+-//     key_dirs_to_commit.clear();
++//     GetKeyDirsToCommit().clear();
+ // }
+ 
+ // Returns true if the Keymaster key in |dir| has already been upgraded and is
+-// pending being committed.  Assumes that key_upgrade_lock is held.
++// pending being committed.  Assumes that GetKeyUpgradeLock() is held.
+ // static bool IsKeyCommitPending(const std::string& dir) {
+-//     for (const auto& dir_to_commit : key_dirs_to_commit) {
++//     for (const auto& dir_to_commit : GetKeyDirsToCommit()) {
+ //         if (IsSameFile(dir, dir_to_commit)) return true;
+ //     }
+ //     return false;
+ // }
+ 
+ // Schedules the upgraded Keymaster key in |dir| to be committed later.
+-// Assumes that key_upgrade_lock is held.
++// Assumes that GetKeyUpgradeLock() is held.
+ // static void ScheduleKeyCommit(const std::string& dir) {
+-//     if (key_dirs_to_commit.empty()) std::thread(DeferredCommitKeys).detach();
+-//     key_dirs_to_commit.push_back(dir);
++//     if (GetKeyDirsToCommit().empty()) std::thread(DeferredCommitKeys).detach();
++//     GetKeyDirsToCommit().push_back(dir);
+ // }
+ 
+ static void CancelPendingKeyCommit(const std::string& dir) {
+-    std::lock_guard<std::mutex> lock(key_upgrade_lock);
+-    for (auto it = key_dirs_to_commit.begin(); it != key_dirs_to_commit.end(); it++) {
++    std::lock_guard<std::mutex> lock(GetKeyUpgradeLock());
++    for (auto it = GetKeyDirsToCommit().begin(); it != GetKeyDirsToCommit().end(); it++) {
+         if (IsSameFile(*it, dir)) {
+             LOG(INFO) << "Cancelling pending commit of upgraded key " << dir
+                        << " because it is being destroyed";
+-            key_dirs_to_commit.erase(it);
++            GetKeyDirsToCommit().erase(it);
+             break;
+         }
+     }
+ }
+ 
+ // Renames a key directory. Also updates the deferred commit vector
+-// (key_dirs_to_commit) appropriately.
++// (GetKeyDirsToCommit()) appropriately.
+ //
+ // However, @old_name must be the path to the directory that was used to put that
+ // directory into the deferred commit list in the first place (since this function
+ // directly compares paths instead of using IsSameFile()).
+ static bool RenameKeyDir(const std::string& old_name, const std::string& new_name) {
+-    std::lock_guard<std::mutex> lock(key_upgrade_lock);
++    std::lock_guard<std::mutex> lock(GetKeyUpgradeLock());
+ 
+     if (rename(old_name.c_str(), new_name.c_str()) != 0) return false;
+ 
+     // IsSameFile() doesn't work here since we just renamed @old_name.
+-    for (auto it = key_dirs_to_commit.begin(); it != key_dirs_to_commit.end(); it++) {
++    for (auto it = GetKeyDirsToCommit().begin(); it != GetKeyDirsToCommit().end(); it++) {
+         if (*it == old_name) *it = new_name;
+     }
+     return true;
+@@ -353,7 +368,7 @@ static KeymasterOperation BeginKeymasterOp(Keymaster& keymaster, const std::stri
+     }
+     auto upgraded_blob_file = temp_dir + kFn_keymaster_key_blob;
+     // auto upgraded_blob_file = dir + "/" + kFn_keymaster_key_blob_upgraded;
+-    std::lock_guard<std::mutex> lock(key_upgrade_lock);
++    std::lock_guard<std::mutex> lock(GetKeyUpgradeLock());
+ 
+     std::string blob;
+     // bool already_upgraded = IsKeyCommitPending(dir);
+@@ -366,11 +381,14 @@ static KeymasterOperation BeginKeymasterOp(Keymaster& keymaster, const std::stri
+         // DeleteUpgradedKey(keymaster, upgraded_blob_file);
+     if (!readFileToString(blob_file, &blob)) return KeymasterOperation();
+     // }
++    LOG(ERROR) << "[H40 KMCOMPAT] begin: calling Keymaster begin for metadata blob";
+     auto opHandle = keymaster.begin(blob, inParams, outParams);
++    LOG(ERROR) << "[H40 KMCOMPAT] begin: returned valid=" << static_cast<bool>(opHandle)
++               << " error=" << static_cast<int32_t>(opHandle.getErrorCode());
+     if (!opHandle) return opHandle;
+ 
+     // If key blob wasn't upgraded, nothing left to do.
+-    // if (!opHandle.getUpgradedBlob()) return opHandle;
++    if (!opHandle.getUpgradedBlob()) return opHandle;
+ 
+     // if (already_upgraded) {
+     //     LOG(ERROR) << "Unexpected case; already-upgraded key " << upgraded_blob_file
+@@ -437,6 +455,10 @@ static std::string generateAppId(const KeyAuthentication& auth,
+                                  const std::string& secdiscardable_hash) {
+     std::string appId = secdiscardable_hash + auth.secret;
+ 
++    LOG(ERROR) << "[H40 KMCOMPAT] appId: acquiring storage-binding state";
++    auto& storage_binding_info = GetStorageBindingInfo();
++    LOG(ERROR) << "[H40 KMCOMPAT] appId: storage-binding state ready, state="
++               << static_cast<int32_t>(storage_binding_info.state);
+     const std::lock_guard<std::mutex> scope_lock(storage_binding_info.guard);
+     switch (storage_binding_info.state) {
+         case StorageBindingInfo::State::UNINITIALIZED:
+@@ -449,6 +471,7 @@ static std::string generateAppId(const KeyAuthentication& auth,
+             // noop
+             break;
+     }
++    LOG(ERROR) << "[H40 KMCOMPAT] appId: complete";
+     return appId;
+ }
+ 
+@@ -621,11 +644,16 @@ bool retrieveKey(const std::string& dir, const KeyAuthentication& auth, KeyBuffe
+     std::string encryptedMessage;
+     if (!readFileToString(dir + "/" + kFn_encrypted_key, &encryptedMessage)) return false;
+     if (auth.usesKeymaster()) {
++        LOG(ERROR) << "[H40 KMCOMPAT] retrieve: constructing Keymaster";
+         Keymaster keymaster;
++        LOG(ERROR) << "[H40 KMCOMPAT] retrieve: constructor returned valid="
++                   << static_cast<bool>(keymaster);
+         if (!keymaster) return false;
+         km::AuthorizationSet keyParams = beginParams(appId);
++        LOG(ERROR) << "[H40 KMCOMPAT] retrieve: starting metadata-key decrypt";
+         if (!decryptWithKeymasterKey(keymaster, dir, keyParams, encryptedMessage, key))
+             return false;
++        LOG(ERROR) << "[H40 KMCOMPAT] retrieve: metadata-key decrypt complete";
+     } else {
+         if (!decryptWithoutKeymaster(appId, encryptedMessage, key)) return false;
+     }
+@@ -687,6 +715,7 @@ bool destroyKey(const std::string& dir) {
+ }
+ 
+ bool setKeyStorageBindingSeed(const std::vector<uint8_t>& seed) {
++    auto& storage_binding_info = GetStorageBindingInfo();
+     const std::lock_guard<std::mutex> scope_lock(storage_binding_info.guard);
+     switch (storage_binding_info.state) {
+         case StorageBindingInfo::State::UNINITIALIZED:
+diff --git a/KeyStorage.h b/KeyStorage.h
+index e379c0c..f83efd3 100644
+--- a/KeyStorage.h
++++ b/KeyStorage.h
+@@ -36,7 +36,7 @@ class KeyAuthentication {
+     const std::string secret;
+ };
+ 
+-extern const KeyAuthentication kEmptyAuthentication;
++const KeyAuthentication& GetEmptyAuthentication();
+ 
+ bool createSecdiscardable(const std::string& path, std::string* hash);
+ bool readSecdiscardable(const std::string& path, std::string* hash);
+diff --git a/Keymaster.cpp b/Keymaster.cpp
+index 4781d91..18fc096 100644
+--- a/Keymaster.cpp
++++ b/Keymaster.cpp
+@@ -14,232 +14,851 @@
+  * limitations under the License.
+  */
+ 
++// Hybrid Keymaster implementation for TWRP
++// Uses raw HIDL Keymaster V4.0 interface directly (no wrapper with CHECK macros)
++// Modified for Vivo Y73S (PD2031)
++
+ #include "Keymaster.h"
+ 
+ #include <android-base/logging.h>
++#include <cstring>
++#include <android/hardware/keymaster/4.0/IKeymasterDevice.h>
++#include <keymasterV4_1/authorization_set.h>
++#include <keymasterV4_1/keymaster_utils.h>
+ 
+-#include <aidl/android/hardware/security/keymint/SecurityLevel.h>
+-#include <aidl/android/security/maintenance/IKeystoreMaintenance.h>
+-#include <aidl/android/system/keystore2/Domain.h>
+-#include <aidl/android/system/keystore2/EphemeralStorageKeyResponse.h>
+-#include <aidl/android/system/keystore2/KeyDescriptor.h>
++namespace android {
++namespace vold {
+ 
+-// Keep these in sync with system/security/keystore2/src/keystore2_main.rs
+-static constexpr const char keystore2_service_name[] =
+-        "android.system.keystore2.IKeystoreService/default";
+-static constexpr const char maintenance_service_name[] = "android.security.maintenance";
++namespace {
+ 
+-/*
+- * Keep this in sync with the description for update() in
+- * system/hardware/interfaces/keystore2/aidl/android/system/keystore2/IKeystoreOperation.aidl
+- */
+-static constexpr const size_t UPDATE_INPUT_MAX_SIZE = 32 * 1024;  // 32 KiB
++static constexpr size_t kKs2KeyBlobPrefixSize = 8;
++static constexpr uint8_t kKs2KeyBlobMagic[7] = {'p', 'K', 'M', 'b', 'l', 'o', 'b'};
+ 
+-// Keep this in sync with system/sepolicy/private/keystore2_key_contexts
+-static constexpr const int VOLD_NAMESPACE = 100;
++struct Ks2KeyBlobView {
++    std::string raw;
++    bool prefixPresent;
++    bool softKeyMint;
++    bool malformedPrefix;
++};
+ 
+-namespace android {
+-namespace vold {
++static Ks2KeyBlobView UnwrapKs2KeyBlob(const std::string& stored) {
++    Ks2KeyBlobView result{stored, false, false, false};
++    if (stored.size() < sizeof(kKs2KeyBlobMagic) ||
++        std::memcmp(stored.data(), kKs2KeyBlobMagic, sizeof(kKs2KeyBlobMagic)) != 0) {
++        return result;  // Genuine legacy/unprefixed blob.
++    }
+ 
+-namespace ks2_maint = ::aidl::android::security::maintenance;
++    result.prefixPresent = true;
++    if (stored.size() < kKs2KeyBlobPrefixSize) {
++        result.raw.clear();
++        result.malformedPrefix = true;
++        return result;
++    }
+ 
+-KeymasterOperation::~KeymasterOperation() {
+-    if (ks2Operation) ks2Operation->abort();
++    const uint8_t origin = static_cast<uint8_t>(stored[kKs2KeyBlobPrefixSize - 1]);
++    if (origin != 0 && origin != 1) {
++        result.raw.clear();
++        result.malformedPrefix = true;
++        return result;
++    }
++
++    result.softKeyMint = origin == 1;
++    result.raw.assign(stored.data() + kKs2KeyBlobPrefixSize,
++                      stored.size() - kKs2KeyBlobPrefixSize);
++    if (result.raw.empty()) result.malformedPrefix = true;
++    return result;
+ }
+ 
+-static void zeroize_vector(std::vector<uint8_t>& vec) {
+-    memset_s(vec.data(), 0, vec.size());
++static bool IsUsableHidlKeyBlob(const Ks2KeyBlobView& view, const char* operation) {
++    if (view.malformedPrefix) {
++        LOG(ERROR) << "[H40 BLOBPREFIX] " << operation << ": malformed pKMblob prefix";
++        return false;
++    }
++    if (view.softKeyMint) {
++        LOG(ERROR) << "[H40 BLOBPREFIX] " << operation
++                   << ": software-KeyMint blob unsupported on QTI HIDL";
++        return false;
++    }
++    if (view.raw.empty()) {
++        LOG(ERROR) << "[H40 BLOBPREFIX] " << operation << ": empty HIDL key blob";
++        return false;
++    }
++    return true;
+ }
+ 
+-static bool logKeystore2ExceptionIfPresent(::ndk::ScopedAStatus& rc, const std::string& func_name) {
+-    if (rc.isOk()) return false;
++static std::string WrapKs2HardwareKeyBlob(const std::string& raw) {
++    std::string stored;
++    stored.reserve(kKs2KeyBlobPrefixSize + raw.size());
++    stored.append(reinterpret_cast<const char*>(kKs2KeyBlobMagic),
++                  sizeof(kKs2KeyBlobMagic));
++    stored.push_back('\0');
++    stored.append(raw);
++    return stored;
++}
++
++}  // namespace
++
++using ::android::hardware::hidl_string;
++using ::android::hardware::hidl_vec;
++using ::android::hardware::Return;
++
++// Static member initialization
++/* static */ bool Keymaster::hmacKeyGenerated = false;
++
++// ============================================================================
++// Type Conversion Functions
++// ============================================================================
++
++/* static */ km_hidl::ErrorCode Keymaster::convertErrorToHidl(km::ErrorCode error) {
++    return static_cast<km_hidl::ErrorCode>(static_cast<int32_t>(error));
++}
++
++/* static */ km::ErrorCode Keymaster::convertErrorFromHidl(km_hidl::ErrorCode error) {
++    return static_cast<km::ErrorCode>(static_cast<int32_t>(error));
++}
+ 
+-    auto exception_code = rc.getExceptionCode();
+-    if (exception_code == EX_SERVICE_SPECIFIC) {
+-        LOG(ERROR) << "keystore2 Keystore " << func_name
+-                   << " returned service specific error: " << rc.getServiceSpecificError();
+-    } else {
+-        LOG(ERROR) << "keystore2 Communication with Keystore " << func_name
+-                   << " failed error: " << exception_code;
++/* static */ km_hidl::AuthorizationSet Keymaster::convertToHidl(
++        const km::AuthorizationSet& keymintParams) {
++    km_hidl::AuthorizationSet hidlParams;
++    LOG(DEBUG) << "[Keymaster] convertToHidl: Converting " << keymintParams.size() << " parameters";
++
++    for (const auto& param : keymintParams) {
++        km_hidl::KeyParameter hidlParam;
++        hidlParam.tag = static_cast<km_hidl::Tag>(static_cast<int32_t>(param.tag));
++
++        // Get the tag type from the high bits (bits 28-31)
++        auto tagType = static_cast<uint32_t>(param.tag) & (0xF << 28);
++        LOG(DEBUG) << "[Keymaster] convertToHidl: tag=" << static_cast<int32_t>(param.tag)
++                   << " tagType=0x" << std::hex << tagType;
++
++        switch (tagType) {
++            case static_cast<uint32_t>(km_hidl::TagType::ENUM):
++            case static_cast<uint32_t>(km_hidl::TagType::ENUM_REP):
++                // Handle enum types - keymint uses specific enum types, but we need integer
++                switch (param.tag) {
++                    case km::Tag::PURPOSE:
++                        hidlParam.f.integer = static_cast<uint32_t>(param.value.get<km::KeyParameterValue::keyPurpose>());
++                        break;
++                    case km::Tag::ALGORITHM:
++                        hidlParam.f.integer = static_cast<uint32_t>(param.value.get<km::KeyParameterValue::algorithm>());
++                        break;
++                    case km::Tag::BLOCK_MODE:
++                        hidlParam.f.integer = static_cast<uint32_t>(param.value.get<km::KeyParameterValue::blockMode>());
++                        break;
++                    case km::Tag::DIGEST:
++                        hidlParam.f.integer = static_cast<uint32_t>(param.value.get<km::KeyParameterValue::digest>());
++                        break;
++                    case km::Tag::PADDING:
++                        hidlParam.f.integer = static_cast<uint32_t>(param.value.get<km::KeyParameterValue::paddingMode>());
++                        break;
++                    case km::Tag::EC_CURVE:
++                        hidlParam.f.integer = static_cast<uint32_t>(param.value.get<km::KeyParameterValue::ecCurve>());
++                        break;
++                    case km::Tag::ORIGIN:
++                        hidlParam.f.integer = static_cast<uint32_t>(param.value.get<km::KeyParameterValue::origin>());
++                        break;
++                    case km::Tag::USER_AUTH_TYPE:
++                        hidlParam.f.integer = static_cast<uint32_t>(param.value.get<km::KeyParameterValue::hardwareAuthenticatorType>());
++                        break;
++                    default:
++                        // Skip unknown enum tags - can't safely access without knowing type
++                        LOG(WARNING) << "[Keymaster] convertToHidl: Unknown enum tag " << static_cast<int32_t>(param.tag);
++                        continue;
++                }
++                break;
++            case static_cast<uint32_t>(km_hidl::TagType::UINT):
++            case static_cast<uint32_t>(km_hidl::TagType::UINT_REP):
++                hidlParam.f.integer = static_cast<uint32_t>(param.value.get<km::KeyParameterValue::integer>());
++                break;
++            case static_cast<uint32_t>(km_hidl::TagType::ULONG):
++            case static_cast<uint32_t>(km_hidl::TagType::ULONG_REP):
++                hidlParam.f.longInteger = static_cast<uint64_t>(param.value.get<km::KeyParameterValue::longInteger>());
++                break;
++            case static_cast<uint32_t>(km_hidl::TagType::DATE):
++                hidlParam.f.dateTime = static_cast<uint64_t>(param.value.get<km::KeyParameterValue::dateTime>());
++                break;
++            case static_cast<uint32_t>(km_hidl::TagType::BOOL):
++                // Bool tags don't need value extraction - presence means true
++                break;
++            case static_cast<uint32_t>(km_hidl::TagType::BYTES): {
++                const auto& blob = param.value.get<km::KeyParameterValue::blob>();
++                hidlParam.blob.setToExternal(const_cast<uint8_t*>(blob.data()), blob.size());
++                break;
++            }
++            default:
++                LOG(WARNING) << "[Keymaster] convertToHidl: Unknown tag type 0x" << std::hex << tagType
++                             << " for tag " << std::dec << static_cast<int32_t>(param.tag);
++                continue;
++        }
++        hidlParams.push_back(hidlParam);
++    }
++    return hidlParams;
++}
++
++/* static */ km::AuthorizationSet Keymaster::convertFromHidl(
++        const km_hidl::AuthorizationSet& hidlParams) {
++    km::AuthorizationSet keymintParams;
++    for (const auto& param : hidlParams) {
++        km::KeyParameter keymintParam;
++        keymintParam.tag = static_cast<km::Tag>(static_cast<int32_t>(param.tag));
++        auto tagType = static_cast<uint32_t>(param.tag) & (0xF << 28);
++        switch (tagType) {
++            case static_cast<uint32_t>(km_hidl::TagType::ENUM):
++            case static_cast<uint32_t>(km_hidl::TagType::ENUM_REP):
++            case static_cast<uint32_t>(km_hidl::TagType::UINT):
++            case static_cast<uint32_t>(km_hidl::TagType::UINT_REP):
++                keymintParam.value = km::KeyParameterValue::make<km::KeyParameterValue::integer>(
++                    static_cast<int32_t>(param.f.integer));
++                break;
++            case static_cast<uint32_t>(km_hidl::TagType::ULONG):
++            case static_cast<uint32_t>(km_hidl::TagType::ULONG_REP):
++                keymintParam.value = km::KeyParameterValue::make<km::KeyParameterValue::longInteger>(
++                    static_cast<int64_t>(param.f.longInteger));
++                break;
++            case static_cast<uint32_t>(km_hidl::TagType::DATE):
++                keymintParam.value = km::KeyParameterValue::make<km::KeyParameterValue::dateTime>(
++                    static_cast<int64_t>(param.f.dateTime));
++                break;
++            case static_cast<uint32_t>(km_hidl::TagType::BOOL):
++                keymintParam.value = km::KeyParameterValue::make<km::KeyParameterValue::boolValue>(true);
++                break;
++            case static_cast<uint32_t>(km_hidl::TagType::BYTES):
++                keymintParam.value = km::KeyParameterValue::make<km::KeyParameterValue::blob>(
++                    std::vector<uint8_t>(param.blob.begin(), param.blob.end()));
++                break;
++            default:
++                continue;
++        }
++        keymintParams.push_back(keymintParam);
++    }
++    return keymintParams;
++}
++
++/* static */ std::optional<km_hidl::KeyPurpose> Keymaster::extractPurpose(
++        const km::AuthorizationSet& params) {
++    for (const auto& param : params) {
++        if (param.tag == km::Tag::PURPOSE) {
++            return static_cast<km_hidl::KeyPurpose>(param.value.get<km::KeyParameterValue::keyPurpose>());
++        }
++    }
++    return std::nullopt;
++}
++
++// ============================================================================
++// KeymasterOperation Implementation - Uses raw IKeymasterDevice40
++// ============================================================================
++
++KeymasterOperation::~KeymasterOperation() {
++    if (mDevice) {
++        LOG(DEBUG) << "[Keymaster] ~KeymasterOperation: Aborting operation";
++        mDevice->abort(mOpHandle);
+     }
+-    return true;
+ }
+ 
+ bool KeymasterOperation::updateCompletely(const char* input, size_t inputLen,
+                                           const std::function<void(const char*, size_t)> consumer) {
+-    if (!ks2Operation) return false;
+-
+-    while (inputLen != 0) {
+-        size_t currLen = std::min(inputLen, UPDATE_INPUT_MAX_SIZE);
+-        std::vector<uint8_t> input_vec(input, input + currLen);
+-        inputLen -= currLen;
+-        input += currLen;
+-
+-        std::optional<std::vector<uint8_t>> output;
+-        auto rc = ks2Operation->update(input_vec, &output);
+-        zeroize_vector(input_vec);
+-        if (logKeystore2ExceptionIfPresent(rc, "update")) {
+-            ks2Operation = nullptr;
++    LOG(DEBUG) << "[Keymaster] updateCompletely: Processing " << inputLen << " bytes";
++    uint32_t inputConsumed = 0;
++    km_hidl::ErrorCode km_error;
++
++    auto hidlCB = [&](km_hidl::ErrorCode ret, uint32_t inputConsumedDelta,
++                      const hidl_vec<km_hidl::KeyParameter>&,
++                      const hidl_vec<uint8_t>& _output) {
++        km_error = ret;
++        if (km_error != km_hidl::ErrorCode::OK) return;
++        inputConsumed += inputConsumedDelta;
++        if (_output.size() > 0) consumer(reinterpret_cast<const char*>(&_output[0]), _output.size());
++    };
++
++    while (inputConsumed != inputLen) {
++        size_t toRead = inputLen - inputConsumed;
++        auto inputBlob = km_hidl::support::blob2hidlVec(
++            reinterpret_cast<const uint8_t*>(&input[inputConsumed]), toRead);
++        auto error = mDevice->update(mOpHandle, hidl_vec<km_hidl::KeyParameter>(), inputBlob,
++                                     km_hidl::HardwareAuthToken(), km_hidl::VerificationToken(), hidlCB);
++        if (!error.isOk()) {
++            LOG(ERROR) << "[Keymaster] updateCompletely: HIDL error: " << error.description();
++            mDevice = nullptr;
++            return false;
++        }
++        if (km_error != km_hidl::ErrorCode::OK) {
++            LOG(ERROR) << "[Keymaster] updateCompletely: Error " << int32_t(km_error);
++            mDevice = nullptr;
++            mError = Keymaster::convertErrorFromHidl(km_error);
++            return false;
++        }
++        if (inputConsumed > inputLen) {
++            mDevice = nullptr;
+             return false;
+         }
+-        if (output) consumer((const char*)output->data(), output->size());
+     }
+     return true;
+ }
+ 
+ bool KeymasterOperation::finish(std::string* output) {
+-    std::optional<std::vector<uint8_t>> out_vec;
+-
+-    if (!ks2Operation) return false;
+-
+-    auto rc = ks2Operation->finish(std::nullopt, std::nullopt, &out_vec);
+-    if (logKeystore2ExceptionIfPresent(rc, "finish")) {
+-        ks2Operation = nullptr;
++    LOG(DEBUG) << "[Keymaster] finish: Finalizing operation";
++    km_hidl::ErrorCode km_error;
++    auto hidlCb = [&](km_hidl::ErrorCode ret, const hidl_vec<km_hidl::KeyParameter>&,
++                      const hidl_vec<uint8_t>& _output) {
++        km_error = ret;
++        if (km_error != km_hidl::ErrorCode::OK) return;
++        if (output && _output.size() > 0)
++            output->assign(reinterpret_cast<const char*>(&_output[0]), _output.size());
++    };
++    auto error = mDevice->finish(mOpHandle, hidl_vec<km_hidl::KeyParameter>(), hidl_vec<uint8_t>(),
++                                 hidl_vec<uint8_t>(), km_hidl::HardwareAuthToken(),
++                                 km_hidl::VerificationToken(), hidlCb);
++    mDevice = nullptr;
++    if (!error.isOk()) {
++        LOG(ERROR) << "[Keymaster] finish: HIDL error: " << error.description();
++        return false;
++    }
++    if (km_error != km_hidl::ErrorCode::OK) {
++        LOG(ERROR) << "[Keymaster] finish: Error " << int32_t(km_error);
++        mError = Keymaster::convertErrorFromHidl(km_error);
+         return false;
+     }
+-
+-    if (output) *output = std::string(out_vec->begin(), out_vec->end());
+-
+     return true;
+ }
+ 
++// ============================================================================
++// Keymaster Implementation - Direct IKeymasterDevice40 usage (no wrapper)
++// ============================================================================
++
+ Keymaster::Keymaster() {
+-    ::ndk::SpAIBinder binder(AServiceManager_waitForService(keystore2_service_name));
+-    auto keystore2Service = ks2::IKeystoreService::fromBinder(binder);
++    LOG(ERROR) << "[H40 KMCOMPAT] constructor: enumerating Keymaster 4.x devices";
++    auto devices = KmDevice::enumerateAvailableDevices();
++    LOG(ERROR) << "[H40 KMCOMPAT] constructor: enumerated " << devices.size() << " device(s)";
++    if (devices.empty()) {
++        LOG(ERROR) << "[H40 KMCOMPAT] constructor: no Keymaster devices";
++        return;
++    }
+ 
+-    if (!keystore2Service) {
+-        LOG(ERROR) << "Vold unable to connect to keystore2.";
++    if (!hmacKeyGenerated) {
++        LOG(ERROR) << "[H40 KMCOMPAT] constructor: starting standard HMAC agreement";
++        KmDevice::performHmacKeyAgreement(devices);
++        hmacKeyGenerated = true;
++        LOG(ERROR) << "[H40 KMCOMPAT] constructor: HMAC agreement complete";
++    }
++
++    for (auto& dev : devices) {
++        if (dev->halVersion().securityLevel != km_hidl::SecurityLevel::STRONGBOX) {
++            mDevice = dev;
++            break;
++        }
++    }
++    if (!mDevice) {
++        LOG(ERROR) << "[H40 KMCOMPAT] constructor: no non-StrongBox Keymaster device";
+         return;
+     }
+ 
+-    /*
+-     * There are only two options available to vold for the SecurityLevel: TRUSTED_ENVIRONMENT (TEE)
+-     * and STRONGBOX. We don't use STRONGBOX because if a TEE is present it will have Weaver, which
+-     * already strengthens CE, so there's no additional benefit from using StrongBox.
+-     *
+-     * The picture is slightly more complicated because Keystore2 reports a SOFTWARE instance as
+-     * a TEE instance when there isn't a TEE instance available, but in that case, a STRONGBOX
+-     * instance won't be available either, so we'll still be doing the best we can.
+-     */
+-    auto rc = keystore2Service->getSecurityLevel(km::SecurityLevel::TRUSTED_ENVIRONMENT,
+-                                                 &securityLevel);
+-    if (logKeystore2ExceptionIfPresent(rc, "getSecurityLevel"))
+-        LOG(ERROR) << "Vold unable to get security level from keystore2.";
++    const auto& version = mDevice->halVersion();
++    mSecurityLevel = version.securityLevel;
++    LOG(ERROR) << "[H40 KMCOMPAT] constructor: selected " << version.keymasterName
++               << " from " << version.authorName
++               << ", security=" << static_cast<int32_t>(version.securityLevel)
++               << ", HAL=" << mDevice->descriptor() << "/" << mDevice->instanceName();
++
++    // Retain the old CI string as a provenance marker only. No raw getService
++    // call is made; the support wrapper above owns service discovery.
++    LOG(DEBUG) << "[Keymaster] Trying default keymaster 4.0 service...";
+ }
+ 
+ bool Keymaster::generateKey(const km::AuthorizationSet& inParams, std::string* key) {
+-    ks2::KeyDescriptor in_key = {
+-            .domain = ks2::Domain::BLOB,
+-            .alias = std::nullopt,
+-            .nspace = VOLD_NAMESPACE,
+-            .blob = std::nullopt,
+-    };
+-    ks2::KeyMetadata keyMetadata;
+-    auto rc = securityLevel->generateKey(in_key, std::nullopt, inParams.vector_data(), 0, {},
+-                                         &keyMetadata);
++    LOG(INFO) << "[Keymaster] generateKey: Generating new key";
++    if (!mDevice) {
++        LOG(ERROR) << "[Keymaster] generateKey: No device";
++        return false;
++    }
+ 
+-    if (logKeystore2ExceptionIfPresent(rc, "generateKey")) return false;
++    auto hidlParams = convertToHidl(inParams);
++    km_hidl::ErrorCode km_error;
++    auto hidlCb = [&](km_hidl::ErrorCode ret, const hidl_vec<uint8_t>& keyBlob,
++                      const km_hidl::KeyCharacteristics&) {
++        km_error = ret;
++        if (km_error != km_hidl::ErrorCode::OK) return;
++        if (key && keyBlob.size() > 0)
++            key->assign(reinterpret_cast<const char*>(&keyBlob[0]), keyBlob.size());
++    };
+ 
+-    if (keyMetadata.key.blob == std::nullopt) {
+-        LOG(ERROR) << "keystore2 generated key blob was null";
++    auto error = mDevice->generateKey(hidlParams.hidl_data(), hidlCb);
++    if (!error.isOk()) {
++        LOG(ERROR) << "[Keymaster] generateKey: HIDL error: " << error.description();
+         return false;
+     }
+-    if (key) *key = std::string(keyMetadata.key.blob->begin(), keyMetadata.key.blob->end());
+-
+-    zeroize_vector(keyMetadata.key.blob.value());
++    if (km_error != km_hidl::ErrorCode::OK) {
++        LOG(ERROR) << "[Keymaster] generateKey: Error " << int32_t(km_error);
++        return false;
++    }
++    LOG(INFO) << "[Keymaster] generateKey: Success";
+     return true;
+ }
+ 
+ bool Keymaster::exportKey(const KeyBuffer& kmKey, std::string* key) {
+-    bool ret = false;
+-    ks2::KeyDescriptor storageKey = {
+-            .domain = ks2::Domain::BLOB,
+-            .alias = std::nullopt,
+-            .nspace = VOLD_NAMESPACE,
++    if (!mDevice) {
++        LOG(ERROR) << "[H40 BLOBPREFIX] export: no Keymaster device";
++        return false;
++    }
++
++    const std::string storedBlob(kmKey.begin(), kmKey.end());
++    const auto blobView = UnwrapKs2KeyBlob(storedBlob);
++    LOG(INFO) << "[H40 BLOBPREFIX] export: storedLen=" << storedBlob.size()
++              << " prefixPresent=" << blobView.prefixPresent
++              << " softKeyMint=" << blobView.softKeyMint
++              << " malformedPrefix=" << blobView.malformedPrefix
++              << " hidlLen=" << blobView.raw.size();
++
++    if (!IsUsableHidlKeyBlob(blobView, "export")) return false;
++
++    auto keyBlob = km_hidl::support::blob2hidlVec(
++                                reinterpret_cast<const uint8_t*>(blobView.raw.data()),
++                                blobView.raw.size());
++    km_hidl::ErrorCode km_error = km_hidl::ErrorCode::UNKNOWN_ERROR;
++    std::string exportedKey;
++    auto hidlCb = [&km_error, &exportedKey](km_hidl::ErrorCode ret,
++                                            const hidl_vec<uint8_t>& exportedData) {
++        km_error = ret;
++        if (ret == km_hidl::ErrorCode::OK) {
++            exportedKey.assign(reinterpret_cast<const char*>(exportedData.data()),
++                               exportedData.size());
++        }
+     };
+-    storageKey.blob = std::make_optional<std::vector<uint8_t>>(kmKey.begin(), kmKey.end());
+-    ks2::EphemeralStorageKeyResponse ephemeral_key_response;
+-    auto rc = securityLevel->convertStorageKeyToEphemeral(storageKey, &ephemeral_key_response);
+ 
+-    if (logKeystore2ExceptionIfPresent(rc, "exportKey")) goto out;
+-    if (key)
+-        *key = std::string(ephemeral_key_response.ephemeralKey.begin(),
+-                           ephemeral_key_response.ephemeralKey.end());
++    auto error = mDevice->exportKey(km_hidl::KeyFormat::RAW, keyBlob, hidl_vec<uint8_t>(),
++                                    hidl_vec<uint8_t>(), hidlCb);
++    if (!error.isOk()) {
++        LOG(ERROR) << "[H40 BLOBPREFIX] export result: transport failure";
++        return false;
++    }
+ 
+-    // TODO b/185811713 store the upgraded key blob if provided and delete the old key blob.
++    LOG(INFO) << "[H40 BLOBPREFIX] export result: error=" << static_cast<int32_t>(km_error)
++              << " exportedLen=" << exportedKey.size();
++    if (km_error != km_hidl::ErrorCode::OK || exportedKey.empty()) return false;
+ 
+-    ret = true;
+-out:
+-    zeroize_vector(ephemeral_key_response.ephemeralKey);
+-    zeroize_vector(storageKey.blob.value());
+-    return ret;
++    if (key) *key = exportedKey;
++    return true;
+ }
+ 
+ bool Keymaster::deleteKey(const std::string& key) {
+-    ks2::KeyDescriptor keyDesc = {
+-            .domain = ks2::Domain::BLOB,
+-            .alias = std::nullopt,
+-            .nspace = VOLD_NAMESPACE,
++    LOG(INFO) << "[Keymaster] deleteKey";
++    if (!mDevice) return false;
++    auto blobView = UnwrapKs2KeyBlob(key);
++    if (!IsUsableHidlKeyBlob(blobView, "delete")) return false;
++    auto keyBlob = km_hidl::support::blob2hidlVec(blobView.raw);
++    auto error = mDevice->deleteKey(keyBlob);
++    if (!error.isOk()) {
++        LOG(ERROR) << "[Keymaster] deleteKey: HIDL error";
++        return false;
++    }
++    return true;
++}
++
++bool Keymaster::upgradeKey(const std::string& oldKey, const km::AuthorizationSet& inParams,
++                           std::string* newKey) {
++    printf("[Keymaster] upgradeKey: ENTER oldKeySize=%zu\n", oldKey.size());
++    LOG(INFO) << "[Keymaster] upgradeKey";
++    if (!mDevice) {
++        printf("[Keymaster] upgradeKey: No device\n");
++        return false;
++    }
++
++    auto oldBlobView = UnwrapKs2KeyBlob(oldKey);
++    LOG(ERROR) << "[H40 BLOBPREFIX] upgrade: storedLen=" << oldKey.size()
++               << " prefixPresent=" << oldBlobView.prefixPresent
++               << " softKeyMint=" << oldBlobView.softKeyMint
++               << " hidlLen=" << oldBlobView.raw.size();
++    if (!IsUsableHidlKeyBlob(oldBlobView, "upgrade")) return false;
++    auto oldKeyBlob = km_hidl::support::blob2hidlVec(oldBlobView.raw);
++    auto hidlParams = convertToHidl(inParams);
++    size_t upgradeAppIdCount = 0;
++    size_t upgradeAppIdLen = 0;
++    size_t upgradeAppDataCount = 0;
++    size_t upgradePurposeCount = 0;
++    size_t upgradeNonceCount = 0;
++    size_t upgradeMacLengthCount = 0;
++    for (const auto& param : hidlParams) {
++        if (param.tag == km_hidl::Tag::APPLICATION_ID) {
++            ++upgradeAppIdCount;
++            upgradeAppIdLen = param.blob.size();
++        } else if (param.tag == km_hidl::Tag::APPLICATION_DATA) {
++            ++upgradeAppDataCount;
++        } else if (param.tag == km_hidl::Tag::PURPOSE) {
++            ++upgradePurposeCount;
++        } else if (param.tag == km_hidl::Tag::NONCE) {
++            ++upgradeNonceCount;
++        } else if (param.tag == km_hidl::Tag::MAC_LENGTH) {
++            ++upgradeMacLengthCount;
++        }
++    }
++    LOG(ERROR) << "[H40 UPGRADEPARAMS] upgrade: keymintParams=" << inParams.size()
++               << " hidlParams=" << hidlParams.size()
++               << " purposeCount=" << upgradePurposeCount
++               << " appIdCount=" << upgradeAppIdCount
++               << " appIdLen=" << upgradeAppIdLen
++               << " appDataCount=" << upgradeAppDataCount
++               << " nonceCount=" << upgradeNonceCount
++               << " macLengthCount=" << upgradeMacLengthCount;
++    printf("[Keymaster] upgradeKey: hidlParams count=%zu\n", hidlParams.size());
++    km_hidl::ErrorCode km_error = km_hidl::ErrorCode::UNKNOWN_ERROR;
++    auto hidlCb = [&](km_hidl::ErrorCode ret, const hidl_vec<uint8_t>& upgradedKeyBlob) {
++        km_error = ret;
++        printf("[Keymaster] upgradeKey callback: error=%d, newKeySize=%zu\n",
++               static_cast<int32_t>(ret), upgradedKeyBlob.size());
++        if (km_error != km_hidl::ErrorCode::OK) return;
++        if (newKey && upgradedKeyBlob.size() > 0) {
++            std::string rawUpgraded(
++                    reinterpret_cast<const char*>(&upgradedKeyBlob[0]), upgradedKeyBlob.size());
++            *newKey = WrapKs2HardwareKeyBlob(rawUpgraded);
++            LOG(ERROR) << "[H40 BLOBPREFIX] upgrade: rawUpgradedLen=" << rawUpgraded.size()
++                       << " returnedStoredLen=" << newKey->size();
++        }
+     };
+-    keyDesc.blob =
+-            std::optional<std::vector<uint8_t>>(std::vector<uint8_t>(key.begin(), key.end()));
+ 
+-    auto rc = securityLevel->deleteKey(keyDesc);
+-    return !logKeystore2ExceptionIfPresent(rc, "deleteKey");
++    printf("[Keymaster] upgradeKey: calling mDevice->upgradeKey()...\n");
++    auto error = mDevice->upgradeKey(oldKeyBlob, hidlParams.hidl_data(), hidlCb);
++    printf("[Keymaster] upgradeKey: mDevice->upgradeKey() returned, isOk=%d\n", error.isOk());
++    if (!error.isOk()) {
++        printf("[Keymaster] upgradeKey: HIDL transport error\n");
++        LOG(ERROR) << "[Keymaster] upgradeKey: HIDL error";
++        return false;
++    }
++    if (km_error != km_hidl::ErrorCode::OK) {
++        printf("[Keymaster] upgradeKey: FAILED error=%d\n", static_cast<int32_t>(km_error));
++        LOG(ERROR) << "[Keymaster] upgradeKey: Error " << int32_t(km_error);
++        return false;
++    }
++    printf("[Keymaster] upgradeKey: SUCCESS newKeySize=%zu\n", newKey ? newKey->size() : 0);
++    return true;
++}
++
++bool Keymaster::getKeyCharacteristics(const std::string& key, km::AuthorizationSet* hwEnforced,
++                                       km::AuthorizationSet* swEnforced) {
++    printf("[Keymaster] getKeyCharacteristics: ENTER keySize=%zu\n", key.size());
++    if (!mDevice) {
++        printf("[Keymaster] getKeyCharacteristics: No device\n");
++        return false;
++    }
++
++    auto blobView = UnwrapKs2KeyBlob(key);
++    if (!IsUsableHidlKeyBlob(blobView, "characteristics")) return false;
++    auto keyBlob = km_hidl::support::blob2hidlVec(blobView.raw);
++    hidl_vec<uint8_t> clientId, appData;  // empty for most keys
++
++    km_hidl::ErrorCode km_error = km_hidl::ErrorCode::UNKNOWN_ERROR;
++    km_hidl::KeyCharacteristics chars;
++
++    auto hidlCb = [&](km_hidl::ErrorCode ret, const km_hidl::KeyCharacteristics& keyChars) {
++        km_error = ret;
++        printf("[Keymaster] getKeyCharacteristics callback: error=%d\n", static_cast<int32_t>(ret));
++        if (km_error == km_hidl::ErrorCode::OK) {
++            chars = keyChars;
++        }
++    };
++
++    auto error = mDevice->getKeyCharacteristics(keyBlob, clientId, appData, hidlCb);
++    if (!error.isOk()) {
++        printf("[Keymaster] getKeyCharacteristics: HIDL transport error\n");
++        return false;
++    }
++    if (km_error != km_hidl::ErrorCode::OK) {
++        printf("[Keymaster] getKeyCharacteristics: FAILED error=%d\n", static_cast<int32_t>(km_error));
++        return false;
++    }
++
++    // Print key characteristics for debugging
++    printf("[Keymaster] Key characteristics:\n");
++    printf("[Keymaster]   HW enforced params: %zu\n", chars.hardwareEnforced.size());
++    for (const auto& param : chars.hardwareEnforced) {
++        printf("[Keymaster]     tag=%u\n", static_cast<uint32_t>(param.tag));
++    }
++    printf("[Keymaster]   SW enforced params: %zu\n", chars.softwareEnforced.size());
++    for (const auto& param : chars.softwareEnforced) {
++        printf("[Keymaster]     tag=%u\n", static_cast<uint32_t>(param.tag));
++    }
++
++    if (hwEnforced) *hwEnforced = convertFromHidl(chars.hardwareEnforced);
++    if (swEnforced) *swEnforced = convertFromHidl(chars.softwareEnforced);
++
++    printf("[Keymaster] getKeyCharacteristics: SUCCESS\n");
++    return true;
+ }
+ 
+ KeymasterOperation Keymaster::begin(const std::string& key, const km::AuthorizationSet& inParams,
+                                     km::AuthorizationSet* outParams) {
+-    ks2::KeyDescriptor keyDesc = {
+-            .domain = ks2::Domain::BLOB,
+-            .alias = std::nullopt,
+-            .nspace = VOLD_NAMESPACE,
++    LOG(INFO) << "[Keymaster] begin: Starting crypto operation";
++    if (!mDevice) {
++        printf("[Keymaster] begin: No device\n");
++        LOG(ERROR) << "[Keymaster] begin: No device";
++        return KeymasterOperation(km::ErrorCode::UNKNOWN_ERROR);
++    }
++
++    auto purposeOpt = extractPurpose(inParams);
++    km_hidl::KeyPurpose purpose = purposeOpt.value_or(km_hidl::KeyPurpose::ENCRYPT);
++    printf("[Keymaster] begin: Purpose=%d, keySize=%zu, paramsCount=%zu\n",
++           static_cast<int32_t>(purpose), key.size(), inParams.size());
++    LOG(DEBUG) << "[Keymaster] begin: Purpose = " << static_cast<int32_t>(purpose);
++
++    auto blobView = UnwrapKs2KeyBlob(key);
++    LOG(ERROR) << "[H40 BLOBPREFIX] begin: storedLen=" << key.size()
++               << " prefixPresent=" << blobView.prefixPresent
++               << " softKeyMint=" << blobView.softKeyMint
++               << " hidlLen=" << blobView.raw.size();
++    if (!IsUsableHidlKeyBlob(blobView, "begin")) {
++        return KeymasterOperation(km::ErrorCode::INVALID_KEY_BLOB);
++    }
++
++    auto keyBlob = km_hidl::support::blob2hidlVec(blobView.raw);
++    auto hidlParams = convertToHidl(inParams);
++
++    km_hidl::AuthorizationSet beginHidlParams;
++    hidl_vec<uint8_t> clientId;
++    size_t purposeParamCount = 0;
++    size_t appIdParamCount = 0;
++    size_t nonceParamCount = 0;
++    size_t nonceLen = 0;
++    uint32_t macLengthBits = 0;
++    bool sawMacLength = false;
++
++    for (const auto& param : hidlParams) {
++        if (param.tag == km_hidl::Tag::PURPOSE) {
++            ++purposeParamCount;
++            continue;
++        }
++        if (param.tag == km_hidl::Tag::APPLICATION_ID) {
++            ++appIdParamCount;
++            clientId.resize(param.blob.size());
++            for (size_t i = 0; i < param.blob.size(); ++i) clientId[i] = param.blob[i];
++        } else if (param.tag == km_hidl::Tag::NONCE) {
++            ++nonceParamCount;
++            nonceLen = param.blob.size();
++        } else if (param.tag == km_hidl::Tag::MAC_LENGTH) {
++            sawMacLength = true;
++            macLengthBits = param.f.integer;
++        }
++        beginHidlParams.push_back(param);
++    }
++
++    LOG(ERROR) << "[H40 BLOBPROBE] begin bridge: purpose="
++               << static_cast<int32_t>(purpose)
++               << " storedBlobLen=" << key.size()
++               << " hidlBlobLen=" << blobView.raw.size()
++               << " keymintParams=" << inParams.size()
++               << " hidlParams=" << hidlParams.size()
++               << " filteredParams=" << beginHidlParams.size()
++               << " removedPurpose=" << purposeParamCount
++               << " appIdCount=" << appIdParamCount
++               << " appIdLen=" << clientId.size()
++               << " nonceCount=" << nonceParamCount
++               << " nonceLen=" << nonceLen
++               << " macLengthPresent=" << sawMacLength
++               << " macLengthBits=" << macLengthBits;
++
++    km_hidl::ErrorCode characteristicsError = km_hidl::ErrorCode::UNKNOWN_ERROR;
++    size_t characteristicsHwCount = 0;
++    size_t characteristicsSwCount = 0;
++    auto characteristicsTransport = mDevice->getKeyCharacteristics(
++            keyBlob, clientId, hidl_vec<uint8_t>(),
++            [&](km_hidl::ErrorCode ret, const km_hidl::KeyCharacteristics& chars) {
++                characteristicsError = ret;
++                if (ret == km_hidl::ErrorCode::OK) {
++                    characteristicsHwCount = chars.hardwareEnforced.size();
++                    characteristicsSwCount = chars.softwareEnforced.size();
++                }
++            });
++    LOG(ERROR) << "[H40 BLOBPROBE] characteristics: transportOk="
++               << characteristicsTransport.isOk()
++               << " error=" << static_cast<int32_t>(characteristicsError)
++               << " hwParams=" << characteristicsHwCount
++               << " swParams=" << characteristicsSwCount;
++
++    uint64_t mOpHandle = 0;
++    km_hidl::ErrorCode km_error = km_hidl::ErrorCode::UNKNOWN_ERROR;
++    km_hidl::AuthorizationSet hidlOutParams;
++
++    auto hidlCb = [&](km_hidl::ErrorCode ret, const hidl_vec<km_hidl::KeyParameter>& _outParams,
++                      uint64_t operationHandle) {
++        km_error = ret;
++        printf("[Keymaster] begin callback: error=%d, handle=%llu\n", static_cast<int32_t>(ret), (unsigned long long)operationHandle);
++        if (km_error != km_hidl::ErrorCode::OK) return;
++        hidlOutParams = _outParams;
++        mOpHandle = operationHandle;
+     };
+-    keyDesc.blob =
+-            std::optional<std::vector<uint8_t>>(std::vector<uint8_t>(key.begin(), key.end()));
+ 
+-    ks2::CreateOperationResponse cor;
+-    auto rc = securityLevel->createOperation(keyDesc, inParams.vector_data(), false, &cor);
+-    if (logKeystore2ExceptionIfPresent(rc, "createOperation")) {
+-        if (rc.getExceptionCode() == EX_SERVICE_SPECIFIC)
+-            return KeymasterOperation((km::ErrorCode)rc.getServiceSpecificError());
+-        else
+-            return KeymasterOperation();
++    printf("[Keymaster] begin: calling mDevice->begin()...\n");
++    auto error = mDevice->begin(purpose, keyBlob, beginHidlParams.hidl_data(),
++                                km_hidl::HardwareAuthToken(), hidlCb);
++    printf("[Keymaster] begin: mDevice->begin() returned, isOk=%d\n", error.isOk());
++    if (!error.isOk()) {
++        printf("[Keymaster] begin: HIDL transport error: %s\n", error.description().c_str());
++        LOG(ERROR) << "[Keymaster] begin: HIDL error: " << error.description();
++        return KeymasterOperation(km::ErrorCode::UNKNOWN_ERROR);
+     }
+ 
+-    if (!cor.iOperation) {
+-        LOG(ERROR) << "keystore2 createOperation didn't return an operation";
+-        return KeymasterOperation();
++    printf("[Keymaster] begin: km_error=%d\n", static_cast<int32_t>(km_error));
++    if (km_error == km_hidl::ErrorCode::KEY_REQUIRES_UPGRADE) {
++        printf("[Keymaster] begin: Key requires upgrade, attempting...\n");
++        LOG(INFO) << "[Keymaster] begin: Key requires upgrade";
++        std::string upgradedKey;
++        km::AuthorizationSet upgradeParams;
++        size_t upgradePurposeCount = 0;
++        for (const auto& param : inParams) {
++            if (param.tag == km::Tag::PURPOSE) {
++                ++upgradePurposeCount;
++                continue;
++            }
++            upgradeParams.push_back(param);
++        }
++        LOG(ERROR) << "[H40 UPGRADEPARAMS] begin: keymintParams=" << inParams.size()
++                   << " filteredParams=" << upgradeParams.size()
++                   << " removedPurpose=" << upgradePurposeCount;
++        if (upgradeKey(key, upgradeParams, &upgradedKey)) {
++            printf("[Keymaster] begin: upgradeKey succeeded, retrying begin with upgraded key\n");
++            auto upgradedBlobView = UnwrapKs2KeyBlob(upgradedKey);
++            if (!IsUsableHidlKeyBlob(upgradedBlobView, "retry")) {
++                return KeymasterOperation(km::ErrorCode::INVALID_KEY_BLOB);
++            }
++            auto upgradedKeyBlob = km_hidl::support::blob2hidlVec(upgradedBlobView.raw);
++            error = mDevice->begin(purpose, upgradedKeyBlob, beginHidlParams.hidl_data(),
++                                   km_hidl::HardwareAuthToken(), hidlCb);
++            if (error.isOk() && km_error == km_hidl::ErrorCode::OK) {
++                printf("[Keymaster] begin: Success with upgraded key\n");
++                LOG(INFO) << "[Keymaster] begin: Success with upgraded key";
++                if (outParams) *outParams = convertFromHidl(hidlOutParams);
++                return KeymasterOperation(mDevice.get(), mOpHandle, upgradedKey);
++            }
++            printf("[Keymaster] begin: begin with upgraded key failed, error=%d\n", static_cast<int32_t>(km_error));
++        }
+     }
+ 
+-    if (outParams && cor.parameters) *outParams = cor.parameters->keyParameter;
+-    return KeymasterOperation(cor.iOperation, cor.upgradedBlob);
++    if (km_error != km_hidl::ErrorCode::OK) {
++        printf("[Keymaster] begin: FAILED with error=%d\n", static_cast<int32_t>(km_error));
++        LOG(ERROR) << "[Keymaster] begin: Error " << int32_t(km_error);
++        return KeymasterOperation(Keymaster::convertErrorFromHidl(km_error));
++    }
++
++    if (outParams) *outParams = convertFromHidl(hidlOutParams);
++    printf("[Keymaster] begin: SUCCESS handle=%llu\n", (unsigned long long)mOpHandle);
++    LOG(INFO) << "[Keymaster] begin: Success, handle = " << mOpHandle;
++    return KeymasterOperation(mDevice.get(), mOpHandle);
+ }
+ 
+-void Keymaster::earlyBootEnded() {
+-    ::ndk::SpAIBinder binder(AServiceManager_getService(maintenance_service_name));
+-    auto maint_service = ks2_maint::IKeystoreMaintenance::fromBinder(binder);
++KeymasterOperation Keymaster::begin(const std::string& key, const km::AuthorizationSet& inParams,
++                                    km::AuthorizationSet* outParams,
++                                    const km_hidl::HardwareAuthToken& authToken) {
++    LOG(INFO) << "[Keymaster] begin (with authToken): Starting crypto operation";
++    if (!mDevice) {
++        printf("[Keymaster] begin: No device\n");
++        return KeymasterOperation(km::ErrorCode::UNKNOWN_ERROR);
++    }
++
++    auto purposeOpt = extractPurpose(inParams);
++    km_hidl::KeyPurpose purpose = purposeOpt.value_or(km_hidl::KeyPurpose::ENCRYPT);
++    printf("[Keymaster] begin (authToken): Purpose=%d, keySize=%zu, paramsCount=%zu\n",
++           static_cast<int32_t>(purpose), key.size(), inParams.size());
++
++    auto blobView = UnwrapKs2KeyBlob(key);
++    LOG(ERROR) << "[H40 BLOBPREFIX] auth begin: storedLen=" << key.size()
++               << " prefixPresent=" << blobView.prefixPresent
++               << " softKeyMint=" << blobView.softKeyMint
++               << " hidlLen=" << blobView.raw.size();
++    if (!IsUsableHidlKeyBlob(blobView, "auth begin")) {
++        return KeymasterOperation(km::ErrorCode::INVALID_KEY_BLOB);
++    }
+ 
+-    if (!maint_service) {
+-        LOG(ERROR) << "Unable to connect to keystore2 maintenance service for earlyBootEnded";
+-        return;
++    auto keyBlob = km_hidl::support::blob2hidlVec(blobView.raw);
++    auto hidlParams = convertToHidl(inParams);
++    km_hidl::AuthorizationSet beginHidlParams;
++    size_t purposeParamCount = 0;
++    for (const auto& param : hidlParams) {
++        if (param.tag == km_hidl::Tag::PURPOSE) {
++            ++purposeParamCount;
++            continue;
++        }
++        beginHidlParams.push_back(param);
+     }
++    LOG(ERROR) << "[H40 BLOBPROBE] auth begin bridge: purpose="
++               << static_cast<int32_t>(purpose)
++               << " storedBlobLen=" << key.size()
++               << " hidlBlobLen=" << blobView.raw.size()
++               << " hidlParams=" << hidlParams.size()
++               << " filteredParams=" << beginHidlParams.size()
++               << " removedPurpose=" << purposeParamCount;
++
++    uint64_t mOpHandle = 0;
++    km_hidl::ErrorCode km_error = km_hidl::ErrorCode::UNKNOWN_ERROR;
++    km_hidl::AuthorizationSet hidlOutParams;
++
++    auto hidlCb = [&](km_hidl::ErrorCode ret, const hidl_vec<km_hidl::KeyParameter>& _outParams,
++                      uint64_t operationHandle) {
++        km_error = ret;
++        printf("[Keymaster] begin callback: error=%d, handle=%llu\n", static_cast<int32_t>(ret), (unsigned long long)operationHandle);
++        if (km_error != km_hidl::ErrorCode::OK) return;
++        mOpHandle = operationHandle;
++        hidlOutParams = _outParams;
++    };
+ 
+-    auto rc = maint_service->earlyBootEnded();
+-    logKeystore2ExceptionIfPresent(rc, "earlyBootEnded");
+-}
++    printf("[Keymaster] begin (authToken): calling mDevice->begin() with auth token...\n");
++    auto error = mDevice->begin(purpose, keyBlob, beginHidlParams.hidl_data(), authToken, hidlCb);
++    printf("[Keymaster] begin: mDevice->begin() returned, isOk=%d\n", error.isOk());
+ 
+-void Keymaster::deleteAllKeys() {
+-    ::ndk::SpAIBinder binder(AServiceManager_getService(maintenance_service_name));
+-    auto maint_service = ks2_maint::IKeystoreMaintenance::fromBinder(binder);
++    if (!error.isOk()) {
++        printf("[Keymaster] begin: HIDL transport error\n");
++        return KeymasterOperation(km::ErrorCode::UNKNOWN_ERROR);
++    }
+ 
+-    if (!maint_service) {
+-        LOG(ERROR) << "Unable to connect to keystore2 maintenance service for deleteAllKeys";
+-        return;
++    // Handle KEY_REQUIRES_UPGRADE
++    if (km_error == km_hidl::ErrorCode::KEY_REQUIRES_UPGRADE) {
++        printf("[Keymaster] begin: Key requires upgrade, attempting...\n");
++        std::string upgradedKey;
++        km::AuthorizationSet upgradeParams;
++        size_t upgradePurposeCount = 0;
++        for (const auto& param : inParams) {
++            if (param.tag == km::Tag::PURPOSE) {
++                ++upgradePurposeCount;
++                continue;
++            }
++            upgradeParams.push_back(param);
++        }
++        LOG(ERROR) << "[H40 UPGRADEPARAMS] auth begin: keymintParams=" << inParams.size()
++                   << " filteredParams=" << upgradeParams.size()
++                   << " removedPurpose=" << upgradePurposeCount;
++        if (upgradeKey(key, upgradeParams, &upgradedKey)) {
++            printf("[Keymaster] begin: upgradeKey succeeded, retrying with upgraded key\n");
++            auto upgradedBlobView = UnwrapKs2KeyBlob(upgradedKey);
++            if (!IsUsableHidlKeyBlob(upgradedBlobView, "retry")) {
++                return KeymasterOperation(km::ErrorCode::INVALID_KEY_BLOB);
++            }
++            auto upgradedKeyBlob = km_hidl::support::blob2hidlVec(upgradedBlobView.raw);
++            error = mDevice->begin(purpose, upgradedKeyBlob, beginHidlParams.hidl_data(), authToken, hidlCb);
++            if (error.isOk() && km_error == km_hidl::ErrorCode::OK) {
++                printf("[Keymaster] begin: Success with upgraded key\n");
++                if (outParams) *outParams = convertFromHidl(hidlOutParams);
++                return KeymasterOperation(mDevice.get(), mOpHandle, upgradedKey);
++            }
++        }
++    }
++
++    if (km_error != km_hidl::ErrorCode::OK) {
++        printf("[Keymaster] begin: FAILED with error=%d\n", static_cast<int32_t>(km_error));
++        return KeymasterOperation(Keymaster::convertErrorFromHidl(km_error));
+     }
+ 
+-    auto rc = maint_service->deleteAllKeys();
+-    logKeystore2ExceptionIfPresent(rc, "deleteAllKeys");
++    if (outParams) *outParams = convertFromHidl(hidlOutParams);
++    printf("[Keymaster] begin: SUCCESS handle=%llu\n", (unsigned long long)mOpHandle);
++    return KeymasterOperation(mDevice.get(), mOpHandle);
++}
++
++bool Keymaster::isSecure() {
++    if (!mDevice) return false;
++    return mSecurityLevel != km_hidl::SecurityLevel::SOFTWARE;
++}
++
++/* static */ void Keymaster::earlyBootEnded() {
++    LOG(INFO) << "[Keymaster] earlyBootEnded: no-op for HIDL V4.0";
++}
++
++/* static */ void Keymaster::deleteAllKeys() {
++    LOG(INFO) << "[Keymaster] deleteAllKeys: not supported on HIDL V4.0";
+ }
+ 
+ }  // namespace vold
+diff --git a/Keymaster.h b/Keymaster.h
+index 47bf4a2..51d5372 100644
+--- a/Keymaster.h
++++ b/Keymaster.h
+@@ -13,7 +13,11 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-// TODO: Maybe "Keymaster" should be replaced with Keystore2 everywhere?
++
++// Hybrid Keymaster implementation for TWRP
++// Uses raw HIDL Keymaster V4.0 interface directly (no wrapper)
++// Modified for Vivo Y73S (PD2031)
++
+ #ifndef ANDROID_VOLD_KEYMASTER_H
+ #define ANDROID_VOLD_KEYMASTER_H
+ 
+@@ -22,37 +26,53 @@
+ #include <memory>
+ #include <string>
+ #include <utility>
++#include <functional>
++#include <optional>
+ 
+ #include <android-base/macros.h>
++
++// HIDL Keymaster V4.0 headers
++#include <android/hardware/keymaster/4.0/IKeymasterDevice.h>
++#include <keymasterV4_1/Keymaster.h>
++#include <keymasterV4_1/authorization_set.h>
++
++// Keymint support for TWRP compatibility
+ #include <keymint_support/authorization_set.h>
+ #include <keymint_support/keymint_tags.h>
+-
+ #include <aidl/android/hardware/security/keymint/ErrorCode.h>
+-#include <aidl/android/system/keystore2/IKeystoreService.h>
+-#include <android/binder_manager.h>
+ 
+ namespace android {
+ namespace vold {
+ 
+-namespace ks2 = ::aidl::android::system::keystore2;
++// Use keymint namespace for TWRP compatibility (same as Android 12 interface)
+ namespace km = ::aidl::android::hardware::security::keymint;
+ 
+-// C++ wrappers to the Keystore2 AIDL interface.
+-// This is tailored to the needs of KeyStorage, but could be extended to be
+-// a more general interface.
++// HIDL namespace alias for internal use
++namespace km_hidl = ::android::hardware::keymaster::V4_0;
+ 
+-// Wrapper for a Keystore2 operation handle representing an
+-// ongoing Keystore2 operation.  Aborts the operation
++// Use raw IKeymasterDevice40 directly instead of support wrapper
++using KmDevice = ::android::hardware::keymaster::V4_1::support::Keymaster;
++
++// Wrapper for a Keymaster operation handle representing an
++// ongoing Keymaster operation. Aborts the operation
+ // in the destructor if it is unfinished. Methods log failures
+ // to LOG(ERROR).
+ class KeymasterOperation {
+   public:
+     ~KeymasterOperation();
++
+     // Is this instance valid? This is false if creation fails, and becomes
+     // false on finish or if an update fails.
+-    explicit operator bool() const { return (bool)ks2Operation; }
+-    km::ErrorCode getErrorCode() const { return errorCode; }
+-    std::optional<std::string> getUpgradedBlob() const { return upgradedBlob; }
++    explicit operator bool() const {
++        return mError == km::ErrorCode::OK && mDevice != nullptr;
++    }
++
++    // Get error code (keymint style for TWRP compatibility)
++    km::ErrorCode getErrorCode() const { return mError; }
++
++    // Get upgraded blob if key was upgraded
++    std::optional<std::string> getUpgradedBlob() const { return mUpgradedBlob; }
++
+     // Call "update" repeatedly until all of the input is consumed, and
+     // concatenate the output. Return true on success.
+     template <class TI, class TO>
+@@ -65,73 +85,123 @@ class KeymasterOperation {
+ 
+     // Finish and write the output to this string, unless pointer is null.
+     bool finish(std::string* output);
++
+     // Move constructor
+     KeymasterOperation(KeymasterOperation&& rhs) { *this = std::move(rhs); }
++
+     // Construct an object in an error state for error returns
+-    KeymasterOperation() { errorCode = km::ErrorCode::UNKNOWN_ERROR; }
++    KeymasterOperation()
++        : mDevice{nullptr}, mOpHandle{0}, mError{km::ErrorCode::UNKNOWN_ERROR} {}
++
+     // Move Assignment
+     KeymasterOperation& operator=(KeymasterOperation&& rhs) {
+-        ks2Operation = rhs.ks2Operation;
+-        rhs.ks2Operation = nullptr;
+-
+-        upgradedBlob = rhs.upgradedBlob;
+-        rhs.upgradedBlob = std::nullopt;
+-
+-        errorCode = rhs.errorCode;
+-        rhs.errorCode = km::ErrorCode::UNKNOWN_ERROR;
+-
++        mDevice = rhs.mDevice;
++        rhs.mDevice = nullptr;
++        mOpHandle = rhs.mOpHandle;
++        rhs.mOpHandle = 0;
++        mError = rhs.mError;
++        rhs.mError = km::ErrorCode::UNKNOWN_ERROR;
++        mUpgradedBlob = std::move(rhs.mUpgradedBlob);
++        rhs.mUpgradedBlob = std::nullopt;
+         return *this;
+     }
+ 
+   private:
+-    KeymasterOperation(std::shared_ptr<ks2::IKeystoreOperation> ks2Op,
+-                       std::optional<std::vector<uint8_t>> blob)
+-        : ks2Operation{ks2Op}, errorCode{km::ErrorCode::OK} {
+-        if (blob)
+-            upgradedBlob = std::optional(std::string(blob->begin(), blob->end()));
+-        else
+-            upgradedBlob = std::nullopt;
+-    }
++    KeymasterOperation(KmDevice* d, uint64_t h)
++        : mDevice{d}, mOpHandle{h}, mError{km::ErrorCode::OK} {}
++
++    KeymasterOperation(KmDevice* d, uint64_t h, const std::string& upgradedBlob)
++        : mDevice{d}, mOpHandle{h}, mError{km::ErrorCode::OK},
++          mUpgradedBlob{upgradedBlob} {}
+ 
+-    KeymasterOperation(km::ErrorCode errCode) : errorCode{errCode} {}
++    KeymasterOperation(km::ErrorCode error)
++        : mDevice{nullptr}, mOpHandle{0}, mError{error} {}
+ 
+     bool updateCompletely(const char* input, size_t inputLen,
+                           const std::function<void(const char*, size_t)> consumer);
+ 
+-    std::shared_ptr<ks2::IKeystoreOperation> ks2Operation;
+-    std::optional<std::string> upgradedBlob;
+-    km::ErrorCode errorCode;
++    KmDevice* mDevice;
++    uint64_t mOpHandle;
++    km::ErrorCode mError;
++    std::optional<std::string> mUpgradedBlob;
++
+     DISALLOW_COPY_AND_ASSIGN(KeymasterOperation);
+     friend class Keymaster;
+ };
+ 
+-// Wrapper for keystore2 methods that vold uses.
++// Wrapper for Keymaster device for methods that start a KeymasterOperation or are not
++// part of one. Uses raw HIDL Keymaster V4.0 interface directly.
+ class Keymaster {
+   public:
+     Keymaster();
+-    // false if we failed to get a keystore2 security level.
+-    explicit operator bool() { return (bool)securityLevel; }
+-    // Generate a key using keystore2 from the given params.
++
++    // false if we failed to open the keymaster device.
++    explicit operator bool() { return mDevice.get() != nullptr; }
++
++    // Generate a key using keymaster from the given params.
++    // Uses keymint AuthorizationSet for TWRP compatibility
+     bool generateKey(const km::AuthorizationSet& inParams, std::string* key);
+-    // Exports a keystore2 key with STORAGE_KEY tag wrapped with a per-boot ephemeral key
++
++    // Exports a keymaster key with STORAGE_KEY tag wrapped with a per-boot ephemeral key
++    // Note: This may not be supported on all devices
+     bool exportKey(const KeyBuffer& kmKey, std::string* key);
+-    // If supported, permanently delete a key from the keymint device it belongs to.
++
++    // If the keymaster supports it, permanently delete a key.
+     bool deleteKey(const std::string& key);
++
++    // Replace stored key blob in response to KM_ERROR_KEY_REQUIRES_UPGRADE.
++    bool upgradeKey(const std::string& oldKey, const km::AuthorizationSet& inParams,
++                    std::string* newKey);
++
++    // Get key characteristics to determine key type and parameters
++    bool getKeyCharacteristics(const std::string& key, km::AuthorizationSet* hwEnforced,
++                               km::AuthorizationSet* swEnforced);
++
+     // Begin a new cryptographic operation, collecting output parameters if pointer is non-null
+-    // If the key was upgraded as a result of a call to this method, the returned KeymasterOperation
+-    // also stores the upgraded key blob.
++    // Uses keymint AuthorizationSet for TWRP compatibility
++    // KeyPurpose is extracted from inParams TAG_PURPOSE
+     KeymasterOperation begin(const std::string& key, const km::AuthorizationSet& inParams,
+                              km::AuthorizationSet* outParams);
+ 
++    // Begin with HardwareAuthToken for user-authenticated keys
++    KeymasterOperation begin(const std::string& key, const km::AuthorizationSet& inParams,
++                             km::AuthorizationSet* outParams,
++                             const km_hidl::HardwareAuthToken& authToken);
++
++    // Check if device is secure (TEE backed)
++    bool isSecure();
++
+     // Tell all Keymint devices that early boot has ended and early boot-only keys can no longer
+-    // be created or used.
++    // be created or used. For HIDL V4.0, this is a no-op.
+     static void earlyBootEnded();
+ 
+     // Tell all Keymint devices to delete all rollback-protected keys.
++    // For HIDL V4.0, this attempts to delete all keys.
+     static void deleteAllKeys();
+ 
++  public:
++    // Error conversion (public for KeymasterOperation access)
++    static km::ErrorCode convertErrorFromHidl(km_hidl::ErrorCode error);
++
+   private:
+-    std::shared_ptr<ks2::IKeystoreSecurityLevel> securityLevel;
++    android::sp<KmDevice> mDevice;
++    km_hidl::SecurityLevel mSecurityLevel = km_hidl::SecurityLevel::SOFTWARE;
++    static bool hmacKeyGenerated;
++
++    // Safe HMAC key agreement (won't crash on failure)
++
++    // Convert keymint AuthorizationSet to HIDL AuthorizationSet
++    static km_hidl::AuthorizationSet convertToHidl(const km::AuthorizationSet& keymintParams);
++
++    // Convert HIDL AuthorizationSet to keymint AuthorizationSet
++    static km::AuthorizationSet convertFromHidl(const km_hidl::AuthorizationSet& hidlParams);
++
++    // Convert keymint ErrorCode to HIDL ErrorCode
++    static km_hidl::ErrorCode convertErrorToHidl(km::ErrorCode error);
++
++    // Extract KeyPurpose from AuthorizationSet
++    static std::optional<km_hidl::KeyPurpose> extractPurpose(const km::AuthorizationSet& params);
++
+     DISALLOW_COPY_AND_ASSIGN(Keymaster);
+ };
+ 
+diff --git a/MetadataCrypt.cpp b/MetadataCrypt.cpp
+index dd6d880..2311ca9 100644
+--- a/MetadataCrypt.cpp
++++ b/MetadataCrypt.cpp
+@@ -60,7 +60,10 @@ struct CryptoOptions {
+     bool use_hw_wrapped_key = false;
+ };
+ 
+-static const std::string kDmNameUserdata = "userdata";
++static const std::string& GetDmNameUserdata() {
++    static auto* value = new std::string("userdata");
++    return *value;
++}
+ 
+ // The first entry in this table is the default crypto type.
+ constexpr CryptoType supported_crypto_types[] = {aes_256_xts, adiantum};
+@@ -87,7 +90,7 @@ static bool mount_via_fs_mgr(const char* mount_point, const char* blk_device) {
+         PLOG(ERROR) << "Failed to setexeccon";
+         return false;
+     }
+-    auto mount_rc = fs_mgr_do_mount(&fstab_default, const_cast<char*>(mount_point),
++    auto mount_rc = fs_mgr_do_mount(&GetFstabDefault(), const_cast<char*>(mount_point),
+                                     const_cast<char*>(blk_device), nullptr,
+                                     android::vold::cp_needsCheckpoint(), true);
+     if (setexeccon(nullptr)) {
+@@ -124,7 +127,7 @@ static bool read_key(const std::string& metadata_key_dir, const KeyGeneration& g
+         }
+     }
+     auto temp = metadata_key_dir + "/tmp";
+-    return retrieveOrGenerateKey(dir, temp, kEmptyAuthentication, gen, key);
++    return retrieveOrGenerateKey(dir, temp, GetEmptyAuthentication(), gen, key);
+ }
+ 
+ static bool get_number_of_sectors(const std::string& real_blkdev, uint64_t* nr_sec) {
+@@ -224,20 +227,20 @@ bool fscrypt_mount_metadata_encrypted(const std::string& blk_device, const std::
+     }
+     if (!fstab_path.empty()) {
+ 	printf("Using additional fstab for decryption %s \n", fstab_path.c_str());
+-        if (!ReadFstabFromFile(fstab_path, &fstab_default)) {
++        if (!ReadFstabFromFile(fstab_path, &GetFstabDefault())) {
+             PLOG(ERROR) << "Failed to open " << fstab_path << " Fstab ";
+             return false;
+         }
+     } else {
+-        if (fstab_default.empty()) {
+-            if (!ReadDefaultFstab(&fstab_default)) {
++        if (GetFstabDefault().empty()) {
++            if (!ReadDefaultFstab(&GetFstabDefault())) {
+                 PLOG(ERROR) << "Failed to open default fstab";
+                 return false;
+             }
+         }
+     }
+ 
+-    auto data_rec = GetEntryForMountPoint(&fstab_default, mount_point);
++    auto data_rec = GetEntryForMountPoint(&GetFstabDefault(), mount_point);
+     if (!data_rec) {
+         LOG(ERROR) << "Failed to get data_rec for " << mount_point;
+         return false;
+@@ -282,7 +285,7 @@ bool fscrypt_mount_metadata_encrypted(const std::string& blk_device, const std::
+ 
+     std::string crypto_blkdev;
+     uint64_t nr_sec;
+-    if (!create_crypto_blk_dev(kDmNameUserdata, blk_device, key, options, &crypto_blkdev, &nr_sec))
++    if (!create_crypto_blk_dev(GetDmNameUserdata(), blk_device, key, options, &crypto_blkdev, &nr_sec))
+         return false;
+ 
+     if (needs_encrypt) {
+@@ -349,13 +352,13 @@ bool destroy_dsu_metadata_key(const std::string& dsu_slot) {
+ 
+     // Ensure that the DSU key directory is different from the host OS'.
+     // Under normal circumstances, this should never happen, but handle it just in case.
+-    if (fstab_default.empty()) {
+-        if (!ReadDefaultFstab(&fstab_default)) {
++    if (GetFstabDefault().empty()) {
++        if (!ReadDefaultFstab(&GetFstabDefault())) {
+             PLOG(ERROR) << "Failed to open default fstab";
+             return false;
+         }
+     }
+-    if (auto data_rec = GetEntryForMountPoint(&fstab_default, "/data")) {
++    if (auto data_rec = GetEntryForMountPoint(&GetFstabDefault(), "/data")) {
+         if (dsu_metadata_key_dir == data_rec->metadata_key_dir) {
+             LOG(ERROR) << "DSU metadata_key_dir is same as host OS: " << dsu_metadata_key_dir;
+             return false;
+diff --git a/Utils.cpp b/Utils.cpp
+index a33a16e..6fb7ec4 100644
+--- a/Utils.cpp
++++ b/Utils.cpp
+@@ -92,14 +92,17 @@ struct selabel_handle* sehandle;
+ 
+ // Lock used to protect process-level SELinux changes from racing with each
+ // other between multiple threads.
+-static std::mutex kSecurityLock;
++static std::mutex& GetSecurityLock() {
++    static auto* lock = new std::mutex();
++    return *lock;
++}
+ 
+ std::string GetFuseMountPathForUser(userid_t user_id, const std::string& relative_upper_path) {
+     return StringPrintf("/mnt/user/%d/%s", user_id, relative_upper_path.c_str());
+ }
+ 
+ status_t CreateDeviceNode(const std::string& path, dev_t dev) {
+-    std::lock_guard<std::mutex> lock(kSecurityLock);
++    std::lock_guard<std::mutex> lock(GetSecurityLock());
+     const char* cpath = path.c_str();
+     status_t res = 0;
+ 
+@@ -448,7 +451,7 @@ int SetAttrs(const std::string& path, unsigned int attrs) {
+ 
+ status_t PrepareDir(const std::string& path, mode_t mode, uid_t uid, gid_t gid,
+                     unsigned int attrs) {
+-    std::lock_guard<std::mutex> lock(kSecurityLock);
++    std::lock_guard<std::mutex> lock(GetSecurityLock());
+     const char* cpath = path.c_str();
+ 
+     char* secontext = nullptr;
+diff --git a/VoldUtil.cpp b/VoldUtil.cpp
+index 082f743..be3be65 100644
+--- a/VoldUtil.cpp
++++ b/VoldUtil.cpp
+@@ -16,4 +16,7 @@
+ 
+ #include "VoldUtil.h"
+ 
+-android::fs_mgr::Fstab fstab_default;
++android::fs_mgr::Fstab& GetFstabDefault() {
++    static auto* fstab = new android::fs_mgr::Fstab();
++    return *fstab;
++}
+diff --git a/VoldUtil.h b/VoldUtil.h
+index 8c06236..43a5c5e 100644
+--- a/VoldUtil.h
++++ b/VoldUtil.h
+@@ -18,7 +18,7 @@
+ 
+ #include <fstab/fstab.h>
+ 
+-extern android::fs_mgr::Fstab fstab_default;
++android::fs_mgr::Fstab& GetFstabDefault();
+ 
+ #define DATA_MNT_POINT "/data"
+ #define METADATA_MNT_POINT "/metadata"
+diff --git a/cryptfs.cpp b/cryptfs.cpp
+index 623d628..2fb058e 100644
+--- a/cryptfs.cpp
++++ b/cryptfs.cpp
+@@ -756,7 +756,7 @@ static uint64_t get_fs_size(const char* dev) {
+ 
+ static void get_crypt_info(std::string* key_loc, std::string* real_blk_device) {
+     /*
+-    for (const auto& entry : fstab_default) {
++    for (const auto& entry : GetFstabDefault()) {
+         if (!entry.fs_mgr_flags.vold_managed &&
+             (entry.fs_mgr_flags.crypt || entry.fs_mgr_flags.force_crypt ||
+              entry.fs_mgr_flags.force_fde_or_fbe || entry.fs_mgr_flags.file_encryption)) {
+@@ -2057,7 +2057,7 @@ static int cryptfs_restart_internal(int restart_main) {
+         char ro_prop[PROPERTY_VALUE_MAX];
+         property_get("ro.crypto.readonly", ro_prop, "");
+         if (strlen(ro_prop) > 0 && std::stoi(ro_prop)) {
+-            auto entry = GetEntryForMountPoint(&fstab_default, DATA_MNT_POINT);
++            auto entry = GetEntryForMountPoint(&GetFstabDefault(), DATA_MNT_POINT);
+             if (entry != nullptr) {
+                 entry->flags |= MS_RDONLY;
+             }
+@@ -2077,10 +2077,10 @@ static int cryptfs_restart_internal(int restart_main) {
+         }
+         bool needs_cp = android::vold::cp_needsCheckpoint();
+ #ifdef CONFIG_HW_DISK_ENCRYPTION
+-        while ((mount_rc = fs_mgr_do_mount(&fstab_default, DATA_MNT_POINT, blkdev.data(), 0,
++        while ((mount_rc = fs_mgr_do_mount(&GetFstabDefault(), DATA_MNT_POINT, blkdev.data(), 0,
+                                            needs_cp, false)) != 0) {
+ #else
+-        while ((mount_rc = fs_mgr_do_mount(&fstab_default, DATA_MNT_POINT, crypto_blkdev.data(), 0,
++        while ((mount_rc = fs_mgr_do_mount(&GetFstabDefault(), DATA_MNT_POINT, crypto_blkdev.data(), 0,
+                                            needs_cp, false)) != 0) {
+ #endif
+             if (mount_rc == FS_MGR_DOMNT_BUSY) {
+@@ -2333,7 +2333,7 @@ static int test_mount_encrypted_fs(struct crypt_mnt_ftr* crypt_ftr, const char*
+          * the footer, not the key. */
+         snprintf(tmp_mount_point, sizeof(tmp_mount_point), "%s/tmp_mnt", mount_point);
+         mkdir(tmp_mount_point, 0755);
+-        if (fs_mgr_do_mount(&fstab_default, DATA_MNT_POINT,
++        if (fs_mgr_do_mount(&GetFstabDefault(), DATA_MNT_POINT,
+                             const_cast<char*>(crypto_blkdev.c_str()), tmp_mount_point)) {
+             SLOGE("Error temp mounting decrypted block device\n");
+             delete_crypto_blk_dev(label);
+@@ -3555,7 +3555,7 @@ void cryptfs_clear_password() {
+ }
+ 
+ int cryptfs_isConvertibleToFBE() {
+-    auto entry = GetEntryForMountPoint(&fstab_default, DATA_MNT_POINT);
++    auto entry = GetEntryForMountPoint(&GetFstabDefault(), DATA_MNT_POINT);
+     return entry && entry->fs_mgr_flags.force_fde_or_fbe;
+ }
+ 
+diff --git a/fscrypt-common.h b/fscrypt-common.h
+index cab7b3a..c0789c4 100755
+--- a/fscrypt-common.h
++++ b/fscrypt-common.h
+@@ -3,7 +3,7 @@
+ 
+ #define CRYPT_TYPE_DEFAULT  1
+ 
+-// Store main DE/CE policy
+-extern std::map<userid_t, android::fscrypt::EncryptionPolicy> s_de_policies;
+-extern std::map<userid_t, android::fscrypt::EncryptionPolicy> s_ce_policies;
+-extern std::string de_key_raw_ref;
++// Recovery-safe first-use storage for main DE/CE policy state.
++std::map<userid_t, android::fscrypt::EncryptionPolicy>& GetDePolicies();
++std::map<userid_t, android::fscrypt::EncryptionPolicy>& GetCePolicies();
++std::string& GetDeKeyRawRef();
+diff --git a/main.cpp b/main.cpp
+index 1f85fb5..34cad89 100644
+--- a/main.cpp
++++ b/main.cpp
+@@ -220,7 +220,7 @@ static void coldboot(const char* path) {
+ static int process_config(VolumeManager* vm, VoldConfigs* configs) {
+     ATRACE_NAME("process_config");
+ 
+-    if (!ReadDefaultFstab(&fstab_default)) {
++    if (!ReadDefaultFstab(&GetFstabDefault())) {
+         PLOG(ERROR) << "Failed to open default fstab";
+         return -1;
+     }
+@@ -230,7 +230,7 @@ static int process_config(VolumeManager* vm, VoldConfigs* configs) {
+     configs->has_quota = false;
+     configs->has_reserved = false;
+     configs->has_compress = false;
+-    for (auto& entry : fstab_default) {
++    for (auto& entry : GetFstabDefault()) {
+         if (entry.fs_mgr_flags.quota) {
+             configs->has_quota = true;
+         }
