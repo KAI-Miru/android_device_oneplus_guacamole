@@ -25,6 +25,7 @@ TEXT_ROOTS = (
     REPO_ROOT / ".github",
     REPO_ROOT / "build" / "h40",
     REPO_ROOT / "recovery" / "root",
+    REPO_ROOT / "prebuilt" / "h40",
 )
 
 

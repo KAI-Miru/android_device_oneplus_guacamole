@@ -48,6 +48,13 @@ layout. All four patches apply cleanly with
   stale waits, replaces the stock mount tables with the audited Guacamole
   tables, suppresses unavailable stock services, then installs the MTP,
   cgroup, timezone, haptics, and QSEE payloads required by the hybrid ramdisk.
+- `stock-first/build_full_boot.sh` starts from the checked H.40 ramdisk, builds
+  the exact private TWRP dependency closure, applies the tested RC2 fixes and
+  Keystore2 runtime, restores the H.40 boot-v2 framing, and verifies the final
+  AVB-padded `boot.img` independently.
+- `prebuilt/h40/manifest.json` pins every stock component and deliberate binary
+  overlay. The 75,024-byte CommonDCS library is the tested H.40 `system_ext`
+  copy (`e9ea4b62...`), not the different H.40 ODM/Hotdog copy.
 
 ## Release support policy
 
@@ -89,14 +96,19 @@ layout. All four patches apply cleanly with
 
 1. Never edit a patch without updating its SHA-256 here and in the workflow.
 2. Never move an upstream commit without regenerating and reviewing all patches.
-3. Preserve the stock ColorOS policy and `/system/lib64/libbinder.so`.
+3. Preserve the stock ColorOS policy, stock recovery, kernel, DTB, recovery
+   DTBO, and `/system/lib64/libbinder.so`.
 4. Keep the Keystore2 service disabled; the adapter starts it only during an
    accepted credential flow.
-5. Preserve the exact-H.40 OEM library hash gate and fail closed on ambiguity.
+5. Preserve both exact-H.40 OEM hash gates and fail closed on ambiguity:
+   decryption blobs come from the stock ramdisk and CommonDCS comes from the
+   pinned H.40 `system_ext` overlay.
 6. A successful compile must upload its binaries before optional packaging or
    diagnostics can fail.
 7. Do not expand decryption beyond Android user 0 without separate physical
    validation and an explicit support-policy change.
+8. Treat the compiled Android boot output as an intermediate only. Release and
+   device-test artifacts must pass the complete stock-first verification.
 
 Version numbers belong in Git history and release notes, not filenames. Future
 fixes should update the appropriate final patch instead of adding another

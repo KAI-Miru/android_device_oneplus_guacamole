@@ -17,6 +17,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEVICE_ROOT = REPO_ROOT / "recovery" / "root"
+OVERLAY_ROOT = REPO_ROOT / "prebuilt" / "h40" / "overlay"
 
 MTK_E2FSCK = (
     "    exec /sbin/e2fsck -y /dev/block/platform/mtk-msdc.0/by-name/cache\n"
@@ -144,6 +145,18 @@ PAYLOADS = (
     "etc/cgroups.json",
 )
 
+PREBUILT_OVERLAY_PAYLOADS = {
+    "system/usr/share/zoneinfo/tzdata",
+    "system/lib64/libspl.so",
+    "system/lib64/libops.so",
+    "vendor/firmware/aw8697_rtp.bin",
+    "vendor/firmware/aw8697_haptic_170.bin",
+    "vendor/firmware/40ms_RTP_170Hz.bin",
+    "vendor/firmware/80ms_RTP_170Hz.bin",
+    "vendor/lib64/libspl.so",
+    "vendor/lib64/libops.so",
+}
+
 ROOT_MOUNT_TABLES = {
     "etc/recovery.fstab": "system/etc/recovery.fstab",
     "etc/twrp.flags": "system/etc/twrp.flags",
@@ -269,7 +282,8 @@ def main() -> None:
 
     copied = {}
     for relative in PAYLOADS:
-        source = DEVICE_ROOT / relative
+        source_root = OVERLAY_ROOT if relative in PREBUILT_OVERLAY_PAYLOADS else DEVICE_ROOT
+        source = source_root / relative
         target = root / relative
         if not source.is_file() or source.stat().st_size == 0:
             raise SystemExit(f"device payload is missing or empty: {relative}")

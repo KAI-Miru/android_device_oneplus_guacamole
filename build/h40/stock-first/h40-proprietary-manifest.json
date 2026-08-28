@@ -1,0 +1,48 @@
+{
+  "source": {
+    "rom": "OnePlus 7 Pro ColorOS 12.1 H.40",
+    "boot_sha256": "991cf738f5a6dc874c6261fa073c89182e61935a9493dc27347699c4d0a68792"
+  },
+  "destination_directory": "/system/tw/lib64",
+  "files": [
+    {
+      "name": "libdecrypt_recovery.so",
+      "bytes": 1479432,
+      "sha256": "d7ff4888d88040596b7ca6c11ee989893b6cef91ba5651202961716f8e7de2a2"
+    },
+    {
+      "name": "libcryptfs_hw.so",
+      "bytes": 11224,
+      "sha256": "d9f30d131048eb5c05064a11866a639870ce47845891635b3f9d7f4569aea37c"
+    },
+    {
+      "name": "libfscrypt.so",
+      "bytes": 37696,
+      "sha256": "01a8a091a805aa81f642be5f5f00473892483c90f8a4e81f4365a606bf436951"
+    },
+    {
+      "name": "vendor.oplus.hardware.cryptoeng@1.0.so",
+      "bytes": 76632,
+      "sha256": "32f2d9f2f730fad899f57fce7e21bf652403bd622010bc08653a3655bb8da5db"
+    },
+    {
+      "name": "vendor.qti.hardware.cryptfshw@1.0.so",
+      "bytes": 84640,
+      "sha256": "c7eccc6982e3898d850930a6aa53d9edd447898556d5129160adf46eb49dc44c"
+    }
+  ],
+  "totals": {
+    "bytes": 1689624,
+    "individual_gzip_9_bytes": 681996
+  },
+  "compatibility_audit": {
+    "runtime_priority": [
+      "official TWRP 3.7.1 guacamole ramdisk",
+      "H.40 stock ramdisk for missing libraries"
+    ],
+    "loaded_libraries": 46,
+    "missing_dt_needed": 0,
+    "objects_with_unresolved_strong_symbols": 0,
+    "stock_only_dependencies_beyond_twrp": 4
+  }
+}

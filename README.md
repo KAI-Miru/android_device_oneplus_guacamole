@@ -34,10 +34,15 @@ still require device testing.
 - `.github/workflows/build-recovery.yml` is the only supported build entry.
 - `build/h40/patches/` contains four final patches against pinned upstream
   repositories.
+- `build/h40/stock-first/` contains the deterministic CPIO, boot-v2, AVB, and
+  independent verification tools.
 - `build/h40/package-keystore2-runtime.py` produces the private runtime used by
-  the hybrid ramdisk.
+  the stock-first ramdisk.
 - `build/h40/verify-recovery-elf.sh` validates the compiled recovery adapter.
-- `recovery/root/` contains device ramdisk files and TWRP resources.
+- `prebuilt/h40/` contains the exact H.40 boot components and the small,
+  hash-pinned RC2 overlay payloads.
+- `recovery/root/` contains only current recovery configuration and TWRP
+  resources; stock init, services, and proprietary runtime come from H.40.
 
 The experiment-by-experiment Python transform chain was removed. Its history
 remains available in Git, while the maintained branch contains only the final
@@ -46,13 +51,15 @@ pinned commits, patch provenance, and invariants.
 
 ## Building
 
-Run the **Guacamole TWRP 12.1 ColorOS** workflow manually, or push a relevant
-change to `android-12.1-latest-snapshot`. The workflow always uploads compiled
-binaries immediately after a successful link, before later packaging checks.
+Run the **Guacamole H.40 stock-first TWRP boot** workflow manually, or push a
+relevant change to `android-12.1-latest-snapshot`. It compiles the current
+adapter, rebuilds the tested stock-first ramdisk, preserves the exact H.40
+kernel/DTB/recovery-DTBO, adds and verifies the `boot` AVB footer, and publishes
+a complete 96 MiB `boot.img`. The compiled-payload artifact is a diagnostic
+failsafe; the stock-first device-test artifact is the testable result.
 
-The produced recovery binary is intended for the established hybrid-ramdisk
-repack process. Do not flash an unreviewed image or assume temporary boot is
-supported by ColorOS.
+Use `fastboot boot` for the first test of every new build. Do not flash an
+unreviewed image or assume temporary boot is supported by every ColorOS base.
 
 ## Status
 
@@ -62,8 +69,9 @@ supported by ColorOS.
 - ADB: working in ordinary recovery use.
 - MTP: physically validated on the tested image. ADB sideload USB transitions
   have been exercised; a complete sideload transfer remains a release test.
-- Haptics, timezone data, cgroup configuration, and the stock QSEE plugin
-  closure are included in the hybrid-ramdisk recovery-fix payload.
+- Haptics, timezone data, cgroup configuration, exact Guacamole CommonDCS, and
+  the stock QSEE plugin closure are installed from one checked, manifest-backed
+  overlay.
 - Stock-init cleanup keeps QSEE explicit-start-only for decryption and disables
   unavailable recovery Wi-Fi, IRSC, and vendor service-manager processes.
 

@@ -3,33 +3,32 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-$(call inherit-product, $(SRC_TARGET_DIR)/product/product_launched_with_p.mk)
-$(call inherit-product, device/oneplus/sm8150-common/common.mk)
+$(call inherit-product, $(SRC_TARGET_DIR)/product/base.mk)
+$(call inherit-product, $(SRC_TARGET_DIR)/product/emulated_storage.mk)
 
-# Get non-open-source specific aspects
-#$(call inherit-product, vendor/oneplus/guacamole/guacamole-vendor.mk)
+LOCAL_PATH := device/oneplus/guacamole
+PRODUCT_PLATFORM := msmnile
+PRODUCT_SHIPPING_API_LEVEL := 28
 
-# Overlays
-DEVICE_PACKAGE_OVERLAYS += \
-    $(LOCAL_PATH)/overlay \
-    $(LOCAL_PATH)/overlay-aicp
+# Physical A/B recovery support without importing the full sm8150 ROM product.
+AB_OTA_UPDATER := true
+AB_OTA_PARTITIONS += \
+    boot \
+    dtbo \
+    odm \
+    system \
+    vendor \
+    vbmeta
 
-# Vendor properties
--include $(LOCAL_PATH)/vendor_props.mk
-
-# Audio
-PRODUCT_COPY_FILES += \
-    $(LOCAL_PATH)/audio/mixer_paths_pahu.xml:$(TARGET_COPY_OUT_VENDOR)/etc/mixer_paths_pahu.xml \
-    $(LOCAL_PATH)/audio/mixer_paths_tavil.xml:$(TARGET_COPY_OUT_VENDOR)/etc/mixer_paths_tavil.xml
-
-# Camera
 PRODUCT_PACKAGES += \
-    OnePlusCameraHelper
-
-# Device init scripts
-PRODUCT_PACKAGES += \
-    fstab.qcom \
-    init.aicp-sm8150.rc
+    android.hardware.boot@1.0-impl:64 \
+    android.hardware.boot@1.0-impl.recovery \
+    bootctrl.$(PRODUCT_PLATFORM).recovery \
+    fastbootd \
+    resetprop \
+    update_engine \
+    update_engine_sideload \
+    update_verifier
 
 # Soong namespaces
 PRODUCT_SOONG_NAMESPACES += \
@@ -41,6 +40,8 @@ PRODUCT_SOONG_NAMESPACES += \
 PRODUCT_PACKAGES += \
     qcom_decrypt \
     qcom_decrypt_fbe
+
+PRODUCT_BUILD_RECOVERY_IMAGE := true
 
 # Crypto
 TW_INCLUDE_CRYPTO := true
@@ -95,4 +96,3 @@ RECOVERY_LIBRARY_SOURCE_FILES += \
 PRODUCT_COPY_FILES += \
     $(OUT_DIR)/target/product/guacamole/system/etc/vintf/manifest.xml:$(TARGET_COPY_OUT_RECOVERY)/root/system/etc/vintf/manifest.xml \
     $(OUT_DIR)/target/product/guacamole/vendor/etc/vintf/manifest.xml:$(TARGET_COPY_OUT_RECOVERY)/root/vendor/etc/vintf/manifest.xml
-

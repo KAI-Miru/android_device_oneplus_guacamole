@@ -1,4 +1,4 @@
-name: Guacamole TWRP 12.1 ColorOS
+name: Guacamole H.40 stock-first TWRP boot
 
 on:
   push:
@@ -7,35 +7,39 @@ on:
     paths:
       - ".github/workflows/build-recovery.yml"
       - "build/h40/**"
+      - "prebuilt/h40/**"
       - "recovery/root/**"
+      - "Android.bp"
+      - "AndroidProducts.mk"
       - "BoardConfig.mk"
       - "device.mk"
+      - "system.prop"
       - "twrp_guacamole.mk"
+      - "twrp.dependencies"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: guacamole-coloros-${{ github.ref }}
+  group: guacamole-h40-stock-first-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build:
+  boot-image:
     runs-on: ubuntu-22.04
-    timeout-minutes: 240
+    timeout-minutes: 360
 
     env:
       MANIFEST_URL: https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git
       MANIFEST_BRANCH: twrp-12.1
       DEVICE_PATH: device/oneplus/guacamole
       COMMON_PATH: device/oneplus/sm8150-common
-      ONEPLUS_COMMON_PATH: device/oneplus/common
-      KERNEL_PATH: kernel/oneplus/sm8150
       RECOVERY_REVISION: 5c3d206a5eeb3d446bcda8248a405a4b278bab5c
       VOLD_REVISION: a164ba05c5fef288059774a776b2e6e1119957cf
       SECURITY_REVISION: 14737db1429b8eebc15568bc748b2cd79ccad5c2
       NATIVE_REVISION: 89c808424fbce9e40c0d4e0d1920b3c64a191b7f
+      BOOT_PARTITION_SIZE: "100663296"
       BUILD_JOBS: "4"
       LC_ALL: C
       TZ: UTC
@@ -106,16 +110,6 @@ jobs:
                      remote="github"
                      revision="android-12.1"
                      clone-depth="1" />
-            <project path="$ONEPLUS_COMMON_PATH"
-                     name="LineageOS/android_device_oneplus_common"
-                     remote="github"
-                     revision="lineage-18.1"
-                     clone-depth="1" />
-            <project path="$KERNEL_PATH"
-                     name="nebrassy/android_kernel_oneplus_sm8150"
-                     remote="github"
-                     revision="android-12.1"
-                     clone-depth="1" />
           </manifest>
           EOF
           "$HOME/bin/repo" sync --force-sync --no-clone-bundle --no-tags \
@@ -125,17 +119,39 @@ jobs:
           test "$(git -C system/security rev-parse HEAD)" = "$SECURITY_REVISION"
           test "$(git -C frameworks/native rev-parse HEAD)" = "$NATIVE_REVISION"
 
-      - name: Verify LF-only ramdisk text inputs
+      - name: Verify repository and pinned H.40 inputs
         run: |
           set -euo pipefail
-          python3 "$RUNNER_TEMP/twrp/$DEVICE_PATH/build/h40/verify-ramdisk-text.py"
+          device="$RUNNER_TEMP/twrp/$DEVICE_PATH"
+          python3 "$device/build/h40/verify-ramdisk-text.py"
+          python3 "$device/build/h40/stock-first/verify_prebuilts.py" \
+            --prebuilt-dir "$device/prebuilt/h40" \
+            --manifest "$device/prebuilt/h40/manifest.json" \
+            --report "$GITHUB_WORKSPACE/prebuilt-verification.json"
+          printf '%s  %s\n' \
+            a9ec360fc5395db9b72d36c03af59ff984f4eefcc349dc32a556de7f8ed892ab \
+            "$device/build/h40/stock-first/avbtool_android-12.1.0_r4.py" \
+            | sha256sum --check -
+          python3 -m py_compile "$device/build/h40/"*.py "$device/build/h40/stock-first/"*.py
+          for obsolete in \
+              "$device/audio" \
+              "$device/bluetooth" \
+              "$device/overlay" \
+              "$device/overlay-aicp" \
+              "$device/rootdir" \
+              "$device/recovery/root/system/bin" \
+              "$device/recovery/root/vendor/etc" \
+              "$device/recovery/root/vendor/lib64" \
+              "$device/recovery/root/init.recovery.usb.rc"; do
+            test ! -e "$obsolete"
+          done
+          git -C "$device" diff --check
 
       - name: Apply reviewed H.40 patch set
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/twrp"
           patch_dir="$PWD/$DEVICE_PATH/build/h40/patches"
-
           (
             cd "$patch_dir"
             sha256sum --check <<'EOF'
@@ -145,56 +161,21 @@ jobs:
           bc1398b4901403a33d7ad80a171ba95974ba2c938558bc10b69ff350e8850895  binder.patch
           EOF
           )
-
-          git -C bootable/recovery apply --check --index --whitespace=error-all \
-            "$patch_dir/recovery.patch"
-          git -C bootable/recovery apply --index --whitespace=error-all \
-            "$patch_dir/recovery.patch"
-          git -C system/vold apply --check --index --whitespace=error-all \
-            "$patch_dir/vold.patch"
-          git -C system/vold apply --index --whitespace=error-all \
-            "$patch_dir/vold.patch"
-          git -C system/security apply --check --index --whitespace=error-all \
-            "$patch_dir/security.patch"
-          git -C system/security apply --index --whitespace=error-all \
-            "$patch_dir/security.patch"
-          git -C frameworks/native apply --check --index --whitespace=error-all \
-            "$patch_dir/binder.patch"
-          git -C frameworks/native apply --index --whitespace=error-all \
-            "$patch_dir/binder.patch"
-
+          git -C bootable/recovery apply --check --index --whitespace=error-all "$patch_dir/recovery.patch"
+          git -C bootable/recovery apply --index --whitespace=error-all "$patch_dir/recovery.patch"
+          git -C system/vold apply --check --index --whitespace=error-all "$patch_dir/vold.patch"
+          git -C system/vold apply --index --whitespace=error-all "$patch_dir/vold.patch"
+          git -C system/security apply --check --index --whitespace=error-all "$patch_dir/security.patch"
+          git -C system/security apply --index --whitespace=error-all "$patch_dir/security.patch"
+          git -C frameworks/native apply --check --index --whitespace=error-all "$patch_dir/binder.patch"
+          git -C frameworks/native apply --index --whitespace=error-all "$patch_dir/binder.patch"
           for repository in bootable/recovery system/vold system/security frameworks/native; do
             git -C "$repository" diff --cached --check
           done
-
-          grep -Fq '[H40 V51 PARENT]' bootable/recovery/partitionmanager.cpp
-          grep -Fq '[H40 PORTIDENTITY] using mounted dynamic system' \
-            bootable/recovery/oplus_h40_decrypt.cpp
-          grep -Fq 'Decrypt_User_H40_Modern' system/vold/Decrypt.cpp
-          grep -Fq 'direct-aes-minimal' system/vold/FsCrypt.cpp
-          grep -Fq 'direct-aes-legacy-none' system/vold/FsCrypt.cpp
+          grep -Fq '[H40 PORTIDENTITY] using mounted dynamic system' bootable/recovery/oplus_h40_decrypt.cpp
           grep -Fq '[OPLUS V56 LAYOUT]' system/vold/FsCrypt.cpp
-          grep -Fq 'GetKeyUpgradeLock()' system/vold/KeyStorage.cpp
-          grep -Fq 'GetKeyDirsToCommit()' system/vold/KeyStorage.cpp
-          grep -Fq 'malformed pKMblob prefix' system/vold/Keymaster.cpp
-          grep -Fq 'H40_RECOVERY_KEYSTORE2_PERMISSION_SHIM_V51' \
-            system/security/keystore2/src/utils.rs
-          grep -Fq 'H40_RECOVERY_BINDER_STABILITY_V0_V52' \
-            frameworks/native/libs/binder/Parcel.cpp
-
-          if grep -Fq 'static std::mutex key_upgrade_lock;' system/vold/KeyStorage.cpp ||
-             grep -Fq 'static std::vector<std::string> key_dirs_to_commit;' \
-               system/vold/KeyStorage.cpp ||
-             grep -Fq 'Using key directly' system/vold/Keymaster.cpp; then
-            echo "forbidden legacy crypto path survived the canonical patch set" >&2
-            exit 1
-          fi
-
-          printf '\n# Compile the reviewed H.40 ColorOS adapter.\n' \
-            >> "$DEVICE_PATH/BoardConfig.mk"
-          printf 'TW_INCLUDE_OPLUS_H40_DECRYPT := true\n' \
-            >> "$DEVICE_PATH/BoardConfig.mk"
-
+          grep -Fq 'H40_RECOVERY_KEYSTORE2_PERMISSION_SHIM_V51' system/security/keystore2/src/utils.rs
+          grep -Fq 'H40_RECOVERY_BINDER_STABILITY_V0_V52' frameworks/native/libs/binder/Parcel.cpp
           {
             echo "repository=${GITHUB_REPOSITORY}"
             echo "revision=${GITHUB_SHA}"
@@ -202,33 +183,49 @@ jobs:
             echo "vold_base=$VOLD_REVISION"
             echo "security_base=$SECURITY_REVISION"
             echo "frameworks_native_base=$NATIVE_REVISION"
+            echo "stock_boot_sha256=991cf738f5a6dc874c6261fa073c89182e61935a9493dc27347699c4d0a68792"
+            echo "commondcs_source=ColorOS_12.1_H.40_system_ext"
+            echo "commondcs_sha256=e9ea4b62cd235b095a9da141276cf30add2c20acb73c6aa2cfd7bc0c9d6cc464"
             sha256sum "$patch_dir"/*.patch
-            echo "recovery_tree=$(git -C bootable/recovery write-tree)"
-            echo "vold_tree=$(git -C system/vold write-tree)"
-            echo "security_tree=$(git -C system/security write-tree)"
-            echo "frameworks_native_tree=$(git -C frameworks/native write-tree)"
           } | tee "$GITHUB_WORKSPACE/build-provenance.txt"
 
-          git -C bootable/recovery diff --cached --stat \
-            | tee "$GITHUB_WORKSPACE/recovery-diffstat.txt"
-          git -C system/vold diff --cached --stat \
-            | tee "$GITHUB_WORKSPACE/vold-diffstat.txt"
-          git -C system/security diff --cached --stat \
-            | tee "$GITHUB_WORKSPACE/security-diffstat.txt"
-          git -C frameworks/native diff --cached --stat \
-            | tee "$GITHUB_WORKSPACE/native-diffstat.txt"
-
-      - name: Configure build
+      - name: Configure and assert recovery build
         run: |
-          set -eo pipefail
+          set -euo pipefail
           cd "$RUNNER_TEMP/twrp"
           export ALLOW_MISSING_DEPENDENCIES=true
           export BUILD_USERNAME=KAI-Miru
           export BUILD_HOSTNAME=github-actions
           source build/envsetup.sh
           lunch twrp_guacamole-eng
-          test "$(get_build_var TW_INCLUDE_OPLUS_H40_DECRYPT)" = true
-          test "$(get_build_var TW_EXTRA_LANGUAGES)" = true
+          assert_eq() {
+            local name="$1" expected="$2" actual
+            actual="$(get_build_var "$name")"
+            [[ "$actual" == "$expected" ]] || {
+              echo "Expected $name=$expected, got '$actual'" >&2
+              exit 1
+            }
+          }
+          assert_eq TARGET_PRODUCT twrp_guacamole
+          assert_eq TARGET_DEVICE guacamole
+          assert_eq TARGET_NO_KERNEL false
+          assert_eq TARGET_FORCE_PREBUILT_KERNEL true
+          assert_eq TARGET_KERNEL_SOURCE ""
+          assert_eq BOARD_USES_RECOVERY_AS_BOOT true
+          assert_eq TARGET_NO_RECOVERY true
+          assert_eq BOARD_BOOT_HEADER_VERSION 2
+          assert_eq BOARD_INCLUDE_RECOVERY_DTBO true
+          assert_eq BOARD_BOOTIMAGE_PARTITION_SIZE "$BOOT_PARTITION_SIZE"
+          assert_eq TARGET_PREBUILT_KERNEL "$DEVICE_PATH/prebuilt/h40/kernel"
+          assert_eq TARGET_PREBUILT_DTB "$DEVICE_PATH/prebuilt/h40/dtb.img"
+          assert_eq BOARD_PREBUILT_DTBOIMAGE "$DEVICE_PATH/prebuilt/h40/recovery-dtbo.img"
+          assert_eq TW_INCLUDE_OPLUS_H40_DECRYPT true
+          assert_eq TW_EXTRA_LANGUAGES true
+          if grep -Fq 'device/oneplus/common' \
+              <<<"$(get_build_var PRODUCT_SOONG_NAMESPACES)"; then
+            echo "obsolete full-ROM OnePlus common namespace survived" >&2
+            exit 1
+          fi
 
       - name: Compile and link recovery
         id: build
@@ -242,8 +239,6 @@ jobs:
           lunch twrp_guacamole-eng
           mka recovery -j"$BUILD_JOBS" 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
 
-      # Keep this directly after compilation. Later validation or packaging
-      # failures must never hide successfully linked binaries.
       - name: Stage compiled payload failsafe
         id: compiled_failsafe
         if: ${{ always() && steps.build.outcome == 'success' }}
@@ -252,33 +247,31 @@ jobs:
           source_root="$RUNNER_TEMP/twrp/out/target/product/guacamole/recovery/root/system"
           destination="$RUNNER_TEMP/guacamole-coloros-compiled-payload"
           mkdir -p "$destination/system/bin" "$destination/system/lib64"
-          test -x "$source_root/bin/recovery"
-          install -m 0755 "$source_root/bin/recovery" "$destination/system/bin/recovery"
-          for name in oplus_h40_credential_helper keystore2 linker64; do
-            if test -x "$source_root/bin/$name"; then
-              install -m 0755 "$source_root/bin/$name" "$destination/system/bin/$name"
+          for name in recovery oplus_h40_credential_helper keystore2; do
+            test -x "$source_root/bin/$name"
+            install -m 0755 "$source_root/bin/$name" "$destination/system/bin/$name"
+          done
+          if test -x "$source_root/bin/linker64"; then
+            install -m 0755 "$source_root/bin/linker64" "$destination/system/bin/linker64"
+          fi
+          for name in libbinder.so libbinder_ndk.so; do
+            if test -f "$source_root/lib64/$name"; then
+              install -m 0644 "$source_root/lib64/$name" "$destination/system/lib64/$name"
             fi
           done
-          test -f "$source_root/lib64/libbinder.so"
-          install -m 0644 "$source_root/lib64/libbinder.so" \
-            "$destination/system/lib64/libbinder.so"
-          if test -f "$source_root/lib64/libbinder_ndk.so"; then
-            install -m 0644 "$source_root/lib64/libbinder_ndk.so" \
-              "$destination/system/lib64/libbinder_ndk.so"
-          fi
           (
             cd "$destination"
-            find system -type f -print0 | LC_ALL=C sort -z \
-              | xargs -0 sha256sum > SHA256SUMS
+            find system -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS
           )
 
       - name: Upload compiled payload failsafe
         if: ${{ always() && steps.compiled_failsafe.outcome == 'success' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: guacamole-coloros-compiled-payload
-          if-no-files-found: error
           path: ${{ runner.temp }}/guacamole-coloros-compiled-payload/
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Build matching recovery linker
         id: runtime_linker
@@ -291,253 +284,102 @@ jobs:
           export BUILD_HOSTNAME=github-actions
           source build/envsetup.sh
           lunch twrp_guacamole-eng
-          mka linker.recovery -j"$BUILD_JOBS" 2>&1 \
-            | tee "$GITHUB_WORKSPACE/linker-recovery-build.log"
+          mka linker.recovery -j"$BUILD_JOBS" 2>&1 | tee "$GITHUB_WORKSPACE/linker-recovery-build.log"
           test -x out/target/product/guacamole/recovery/root/system/bin/linker64
-
-      - name: Package private Keystore2 runtime
-        id: runtime_package
-        if: ${{ always() && steps.build.outcome == 'success' && steps.runtime_linker.outcome == 'success' }}
-        run: |
-          set -euo pipefail
-          recovery_root="$RUNNER_TEMP/twrp/out/target/product/guacamole/recovery/root"
-          packager="$RUNNER_TEMP/twrp/$DEVICE_PATH/build/h40/package-keystore2-runtime.py"
-          payload="$GITHUB_WORKSPACE/guacamole-coloros-runtime"
-
-          test -x "$recovery_root/system/bin/recovery"
-          test -x "$recovery_root/system/bin/oplus_h40_credential_helper"
-          test -x "$recovery_root/system/bin/keystore2"
-          test -x "$recovery_root/system/bin/linker64"
-          mkdir -p "$payload"
-          install -m 0755 "$recovery_root/system/bin/recovery" "$payload/recovery"
-          install -m 0755 "$recovery_root/system/bin/oplus_h40_credential_helper" \
-            "$payload/oplus_h40_credential_helper"
-          python3 "$packager" \
-            --recovery-root "$recovery_root" \
-            --output "$payload/keystore2-runtime" \
-            --source-date-epoch 0
-
-          cat > "$payload/INSTALL-MANIFEST.txt" <<'EOF'
-          Guacamole H.40 ColorOS runtime payload
-
-          recovery
-            final path: /system/tw/bin/recovery
-            apply the established private-runtime PT_INTERP/dependency rewrite
-
-          oplus_h40_credential_helper
-            final path: /system/bin/oplus_h40_credential_helper
-            copy byte-for-byte and retain /system/bin/linker64
-
-          keystore2-runtime
-            merge install-root and the exact context-shim operations
-            preserve stock policy and /system/lib64/libbinder.so
-            retain the disabled, explicit-start-only keystore2 service
-          EOF
-          (
-            cd "$GITHUB_WORKSPACE"
-            tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
-              -czf guacamole-coloros-runtime.tar.gz guacamole-coloros-runtime
-          )
-          sha256sum "$GITHUB_WORKSPACE/guacamole-coloros-runtime.tar.gz" \
-            | tee "$GITHUB_WORKSPACE/guacamole-coloros-runtime.tar.gz.sha256"
-          tar -tvzf "$GITHUB_WORKSPACE/guacamole-coloros-runtime.tar.gz" \
-            | tee "$GITHUB_WORKSPACE/guacamole-coloros-runtime.files"
-
-      - name: Upload packaged runtime
-        if: ${{ always() && steps.runtime_package.outcome == 'success' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: guacamole-coloros-runtime
-          if-no-files-found: error
-          path: |
-            guacamole-coloros-runtime.tar.gz
-            guacamole-coloros-runtime.tar.gz.sha256
-            guacamole-coloros-runtime/INSTALL-MANIFEST.txt
-            guacamole-coloros-runtime/keystore2-runtime/MANIFEST.json
-            guacamole-coloros-runtime/keystore2-runtime/SHA256SUMS
 
       - name: Verify compiled recovery and helpers
         id: elf_gate
-        if: ${{ always() && steps.build.outcome == 'success' }}
+        if: ${{ always() && steps.runtime_linker.outcome == 'success' }}
         run: |
           set -euo pipefail
           recovery_root="$RUNNER_TEMP/twrp/out/target/product/guacamole/recovery/root"
-          binary="$recovery_root/system/bin/recovery"
-          helper="$recovery_root/system/bin/oplus_h40_credential_helper"
-          keystore2="$recovery_root/system/bin/keystore2"
-          libbinder="$recovery_root/system/lib64/libbinder.so"
-          verifier="$RUNNER_TEMP/twrp/$DEVICE_PATH/build/h40/verify-recovery-elf.sh"
           report="$GITHUB_WORKSPACE/elf-report"
-
-          bash "$verifier" "$binary" "$report"
-          readelf --file-header --wide "$helper" > "$report/credential-helper.header"
-          readelf --program-headers --wide "$helper" > "$report/credential-helper.program-headers"
-          readelf --dynamic --wide "$helper" > "$report/credential-helper.dynamic"
-          strings -a "$binary" > "$report/recovery.strings"
-          strings -a "$helper" > "$report/credential-helper.strings"
-          strings -a "$keystore2" > "$report/keystore2.strings"
-          strings -a "$libbinder" > "$report/libbinder.strings"
-
+          bash "$RUNNER_TEMP/twrp/$DEVICE_PATH/build/h40/verify-recovery-elf.sh" \
+            "$recovery_root/system/bin/recovery" "$report"
+          strings -a "$recovery_root/system/bin/recovery" > "$report/recovery.strings"
+          strings -a "$recovery_root/system/bin/keystore2" > "$report/keystore2.strings"
+          strings -a "$recovery_root/system/lib64/libbinder.so" > "$report/libbinder.strings"
           grep -Fq '[H40 V51 PARENT]' "$report/recovery.strings"
-          grep -Fq 'H40_RECOVERY_KEYSTORE2_PERMISSION_SHIM_V51' \
-            "$report/keystore2.strings"
-          grep -Fq 'H40_RECOVERY_BINDER_STABILITY_V0_V52' \
-            "$report/libbinder.strings"
-          for marker in \
-              '/system/lib64/libdecrypt_recovery.so' \
-              '_Z21OplusCredentialVerifyNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEEi' \
-              '_Z11setup_de_cei' \
-              '_Z17get_password_typei'; do
-            if ! grep -Fqx -- "$marker" "$report/credential-helper.strings"; then
-              echo "missing required isolated credential-helper marker: $marker" >&2
-              exit 1
-            fi
-          done
-          grep -Fq 'Requesting program interpreter: /system/bin/linker64' \
-            "$report/credential-helper.program-headers"
+          grep -Fq '[OPLUS V56 LAYOUT]' "$report/recovery.strings"
+          grep -Fq 'H40_RECOVERY_KEYSTORE2_PERMISSION_SHIM_V51' "$report/keystore2.strings"
+          grep -Fq 'H40_RECOVERY_BINDER_STABILITY_V0_V52' "$report/libbinder.strings"
 
-          if grep -Fq 'Using key directly' "$report/recovery.strings" ||
-             grep -Fq 'Trying %s wrappedkey' "$report/recovery.strings"; then
-            echo "unsafe key fallback is present in the final recovery ELF" >&2
-            exit 1
-          fi
-
-          sha256sum "$binary" "$helper" "$keystore2" "$libbinder" \
-            | tee "$report/payload.sha256"
-
-      - name: Package TWRP resources
-        id: twres_gate
-        if: ${{ always() && steps.build.outcome == 'success' }}
+      - name: Assemble and verify complete H.40 boot image
+        id: stock_first
+        if: ${{ always() && steps.elf_gate.outcome == 'success' }}
         run: |
           set -euo pipefail
-          recovery_root="$RUNNER_TEMP/twrp/out/target/product/guacamole/recovery/root"
-          twres="$recovery_root/twres"
-          device_twres="$RUNNER_TEMP/twrp/$DEVICE_PATH/recovery/root/twres"
+          cd "$RUNNER_TEMP/twrp"
+          product_root="out/target/product/guacamole"
+          recovery_root="$product_root/recovery/root"
+          device="$DEVICE_PATH"
+          stage="$RUNNER_TEMP/guacamole-h40-stage"
+          work="$RUNNER_TEMP/guacamole-h40-stock-first"
+          ready="$RUNNER_TEMP/guacamole-h40-ready"
+          mkdir -p "$stage" "$ready"
 
-          test -d "$twres/languages"
-          test -d "$twres/fonts"
-          install -D -m 0644 "$device_twres/splash.xml" "$twres/splash.xml"
-          install -D -m 0644 "$device_twres/images/mirumiru.png" \
-            "$twres/images/mirumiru.png"
-          cmp "$device_twres/splash.xml" "$twres/splash.xml"
-          cmp "$device_twres/images/mirumiru.png" "$twres/images/mirumiru.png"
-          for marker in \
-              '<image resource="mirumiru"/>' \
-              '<text>TWRP %tw_version%</text>' \
-              'Latest upstream 12.1 snapshot - 2025-09-02' \
-              'Unofficial ColorOS Edition' \
-              'OnePlus 7 Series - Guacamole Family'; do
-            grep -Fq "$marker" "$twres/splash.xml"
-          done
-          for language in ja lk zh_CN zh_TW; do
-            test -s "$twres/languages/$language.xml"
-          done
-          test "$(find "$twres/languages" -maxdepth 1 -type f -name '*.xml' | wc -l)" -eq 23
+          install -D -m 0644 "$device/recovery/root/twres/splash.xml" "$recovery_root/twres/splash.xml"
+          install -D -m 0644 "$device/recovery/root/twres/images/mirumiru.png" \
+            "$recovery_root/twres/images/mirumiru.png"
+          test -x out/host/linux-x86/bin/mkbootfs
+          out/host/linux-x86/bin/mkbootfs "$recovery_root" > "$stage/twrp.cpio"
 
+          output_name='guacamole-H40-stock-first-TWRP-ColorOS-RC3-TEST.img'
+          bash "$device/build/h40/stock-first/build_full_boot.sh" \
+            --twrp-cpio "$stage/twrp.cpio" \
+            --twrp-tree "$recovery_root" \
+            --recovery-root "$recovery_root" \
+            --work-dir "$work" \
+            --output "$ready/$output_name"
+
+          install -m 0644 \
+            "$work/prebuilt-verification.json" \
+            "$work/stock-assemble.json" \
+            "$work/private-overlay.json" \
+            "$work/stock-patch-overlay.json" \
+            "$work/cryptoeng-overlay.json" \
+            "$work/recovery-fixes-cpio.json" \
+            "$work/runtime-cpio.json" \
+            "$work/boot-repack.json" \
+            "$work/verification.json" \
+            "$work/avb-info.txt" \
+            "$ready/"
+          cat > "$ready/DEVICE-TEST.txt" <<'EOF'
+          GUACAMOLE COLOROS H.40 STOCK-FIRST TWRP BOOT IMAGE
+
+          CI reconstructed the exact H.40 boot baseline, installed the audited
+          private TWRP/ColorOS runtime, added and verified the boot AVB footer,
+          and independently checked the final 96 MiB image. Test with fastboot
+          boot before any flashing or release publication.
+          EOF
           (
-            cd "$recovery_root"
-            find twres -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
-          ) | tee "$GITHUB_WORKSPACE/guacamole-coloros-twres.sha256"
-          tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
-            -czf "$GITHUB_WORKSPACE/guacamole-coloros-twres.tar.gz" \
-            -C "$recovery_root" twres
-          tar -tzf "$GITHUB_WORKSPACE/guacamole-coloros-twres.tar.gz" \
-            > "$GITHUB_WORKSPACE/guacamole-coloros-twres.files"
+            cd "$ready"
+            find . -type f ! -name SHA256SUMS -print0 | LC_ALL=C sort -z \
+              | xargs -0 sha256sum > SHA256SUMS
+          )
 
-      - name: Package hybrid ramdisk recovery fixes
-        id: recovery_fixes
-        if: ${{ always() && steps.build.outcome == 'success' }}
-        run: |
-          set -euo pipefail
-          payload="$GITHUB_WORKSPACE/guacamole-coloros-recovery-fixes"
-          device="$RUNNER_TEMP/twrp/$DEVICE_PATH"
-          mkdir -p "$payload/build/h40"
-
-          install -m 0644 "$device/build/h40/apply-recovery-fixes.py" \
-            "$payload/build/h40/apply-recovery-fixes.py"
-          for relative in \
-              etc/cgroups.json \
-              init.recovery.usb.rc \
-              system/etc/recovery.fstab \
-              system/etc/twrp.flags \
-              system/lib64/libspl.so \
-              system/lib64/libops.so \
-              system/usr/share/zoneinfo/tzdata \
-              vendor/firmware/aw8697_rtp.bin \
-              vendor/firmware/aw8697_haptic_170.bin \
-              vendor/firmware/40ms_RTP_170Hz.bin \
-              vendor/firmware/80ms_RTP_170Hz.bin \
-              vendor/lib64/libspl.so \
-              vendor/lib64/libops.so; do
-            test -s "$device/recovery/root/$relative"
-            install -D -m 0644 "$device/recovery/root/$relative" \
-              "$payload/recovery/root/$relative"
-          done
-
-          python3 -m py_compile "$payload/build/h40/apply-recovery-fixes.py"
-          find "$payload" -type d -name __pycache__ -prune -exec rm -rf '{}' +
-          (
-            cd "$payload"
-            find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
-          ) | tee "$GITHUB_WORKSPACE/guacamole-coloros-recovery-fixes.sha256"
-          tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
-            -czf "$GITHUB_WORKSPACE/guacamole-coloros-recovery-fixes.tar.gz" \
-            -C "$GITHUB_WORKSPACE" guacamole-coloros-recovery-fixes
-          tar -tzf "$GITHUB_WORKSPACE/guacamole-coloros-recovery-fixes.tar.gz" \
-            > "$GITHUB_WORKSPACE/guacamole-coloros-recovery-fixes.files"
-          for required in \
-              guacamole-coloros-recovery-fixes/build/h40/apply-recovery-fixes.py \
-              guacamole-coloros-recovery-fixes/recovery/root/etc/cgroups.json \
-              guacamole-coloros-recovery-fixes/recovery/root/system/etc/recovery.fstab \
-              guacamole-coloros-recovery-fixes/recovery/root/system/etc/twrp.flags \
-              guacamole-coloros-recovery-fixes/recovery/root/system/lib64/libspl.so \
-              guacamole-coloros-recovery-fixes/recovery/root/system/lib64/libops.so \
-              guacamole-coloros-recovery-fixes/recovery/root/system/usr/share/zoneinfo/tzdata \
-              guacamole-coloros-recovery-fixes/recovery/root/vendor/firmware/aw8697_rtp.bin \
-              guacamole-coloros-recovery-fixes/recovery/root/vendor/firmware/aw8697_haptic_170.bin \
-              guacamole-coloros-recovery-fixes/recovery/root/vendor/firmware/40ms_RTP_170Hz.bin \
-              guacamole-coloros-recovery-fixes/recovery/root/vendor/firmware/80ms_RTP_170Hz.bin \
-              guacamole-coloros-recovery-fixes/recovery/root/vendor/lib64/libspl.so \
-              guacamole-coloros-recovery-fixes/recovery/root/vendor/lib64/libops.so; do
-            grep -Fxq "$required" \
-              "$GITHUB_WORKSPACE/guacamole-coloros-recovery-fixes.files"
-          done
-
-      - name: Upload hybrid ramdisk recovery fixes
-        if: ${{ always() && steps.recovery_fixes.outcome == 'success' }}
-        uses: actions/upload-artifact@v4
+      - name: Upload complete H.40 boot image
+        if: ${{ always() && steps.stock_first.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: guacamole-coloros-recovery-fixes
+          name: guacamole-H40-stock-first-TWRP-ColorOS-DEVICE-TEST
+          path: ${{ runner.temp }}/guacamole-h40-ready/
           if-no-files-found: error
-          path: |
-            guacamole-coloros-recovery-fixes.tar.gz
-            guacamole-coloros-recovery-fixes.files
-            guacamole-coloros-recovery-fixes.sha256
+          compression-level: 0
+          retention-days: 14
 
       - name: Upload diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: guacamole-coloros-diagnostics
-          if-no-files-found: warn
+          name: guacamole-coloros-build-diagnostics
           path: |
-            build.log
+            prebuilt-verification.json
             build-provenance.txt
-            recovery-diffstat.txt
-            vold-diffstat.txt
-            security-diffstat.txt
-            native-diffstat.txt
+            build.log
             linker-recovery-build.log
-            guacamole-coloros-runtime.files
             elf-report/
-
-      - name: Upload TWRP resources
-        if: ${{ always() && steps.twres_gate.outcome == 'success' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: guacamole-coloros-twres
-          if-no-files-found: error
-          path: |
-            guacamole-coloros-twres.tar.gz
-            guacamole-coloros-twres.files
-            guacamole-coloros-twres.sha256
+            ${{ runner.temp }}/guacamole-h40-stock-first/hybrid-base-verification.json
+            ${{ runner.temp }}/guacamole-h40-stock-first/avb-verify.txt
+          if-no-files-found: warn
+          retention-days: 14
