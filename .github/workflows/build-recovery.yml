@@ -125,6 +125,11 @@ jobs:
           test "$(git -C system/security rev-parse HEAD)" = "$SECURITY_REVISION"
           test "$(git -C frameworks/native rev-parse HEAD)" = "$NATIVE_REVISION"
 
+      - name: Verify LF-only ramdisk text inputs
+        run: |
+          set -euo pipefail
+          python3 "$RUNNER_TEMP/twrp/$DEVICE_PATH/build/h40/verify-ramdisk-text.py"
+
       - name: Apply reviewed H.40 patch set
         run: |
           set -euo pipefail
@@ -451,6 +456,8 @@ jobs:
               etc/cgroups.json \
               init.recovery.usb.rc \
               system/etc/twrp.flags \
+              system/usr/share/zoneinfo/tzdata \
+              vendor/firmware/aw8697_rtp.bin \
               vendor/firmware/aw8697_haptic_170.bin \
               vendor/firmware/40ms_RTP_170Hz.bin \
               vendor/lib64/libspl.so \
@@ -474,6 +481,8 @@ jobs:
           for required in \
               guacamole-coloros-recovery-fixes/build/h40/apply-recovery-fixes.py \
               guacamole-coloros-recovery-fixes/recovery/root/etc/cgroups.json \
+              guacamole-coloros-recovery-fixes/recovery/root/system/usr/share/zoneinfo/tzdata \
+              guacamole-coloros-recovery-fixes/recovery/root/vendor/firmware/aw8697_rtp.bin \
               guacamole-coloros-recovery-fixes/recovery/root/vendor/firmware/aw8697_haptic_170.bin \
               guacamole-coloros-recovery-fixes/recovery/root/vendor/firmware/40ms_RTP_170Hz.bin \
               guacamole-coloros-recovery-fixes/recovery/root/vendor/lib64/libspl.so \

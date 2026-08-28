@@ -22,8 +22,12 @@ H.40 compatibility patch set provides:
 - explicit fail-closed handling for malformed `pKMblob` values and unsupported
   key origins.
 
-User 0 decryption was physically validated on an H.40-based ColorOS 14 port.
-Other device variants and ROM bases still require device testing.
+The supported decryption scope is intentionally limited to Android user 0,
+the device owner. Owner decryption was physically validated on an H.40-based
+ColorOS 14 port. Secondary Android users, work profiles, System Cloner data,
+and other non-owner credential domains are unsupported; recovery deliberately
+does not attempt to mutate their keys. Other device variants and ROM bases
+still require device testing.
 
 ## Repository layout
 
@@ -52,12 +56,15 @@ supported by ColorOS.
 
 ## Status
 
-- Decryption: working for user 0 on the tested H.40-based port.
+- Decryption: working for the owner (Android user 0) on the tested H.40-based
+  port; non-owner credential domains are formally out of scope.
 - ext4, F2FS, and EROFS kernel filesystem support: present on the tested device.
 - ADB: working in ordinary recovery use.
-- MTP and ADB sideload: single-owner configfs fix is integrated; device retest
-  is pending.
-- Haptics, cgroup configuration, and required QSEE plugins are included in the
-  hybrid-ramdisk recovery-fix payload.
+- MTP: physically validated on the tested image. ADB sideload USB transitions
+  have been exercised; a complete sideload transfer remains a release test.
+- Haptics, timezone data, cgroup configuration, and the stock QSEE plugin
+  closure are included in the hybrid-ramdisk recovery-fix payload.
+- Stock-init cleanup keeps QSEE explicit-start-only for decryption and disables
+  unavailable recovery Wi-Fi, IRSC, and vendor service-manager processes.
 
 This project is unofficial and is not affiliated with TeamWin or OnePlus.

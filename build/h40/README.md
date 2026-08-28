@@ -44,8 +44,27 @@ layout. All four patches apply cleanly with
 - `package-keystore2-runtime.py` copies the exact private dependency closure,
   changes only Keystore2's interpreter, and emits merge-only context shims.
 - `apply-recovery-fixes.py` removes conflicting stock-init USB ownership and
-  stale mounts/waits, then installs the MTP, cgroup, haptics, and QSEE payloads
-  required by the hybrid ramdisk.
+  stale mounts/waits, suppresses unavailable stock services, then installs the
+  MTP, cgroup, timezone, haptics, and QSEE payloads required by the hybrid
+  ramdisk.
+
+## Release support policy
+
+- Decryption support is owner-only: Android user 0 is supported and physically
+  validated. Secondary users, work profiles, System Cloner data, and other
+  non-owner credential domains are intentionally unsupported.
+- `qseecomd` remains disabled by default and is started only by the accepted
+  credential flow. Its proprietary binary hard-codes the listener table, so
+  the matching stock `libspl.so` and `libops.so` plugins are retained instead
+  of binary-patching the security daemon.
+- The recovery-fix transformer removes the premature health-service start and
+  legacy cpuacct/cpuset commands. It also makes `gatekeeperd` explicit-start
+  only and disables unavailable `vndservicemanager`, `irsc_util`, and recovery
+  Wi-Fi services.
+- `aw8697_rtp.bin` is the 72,000-byte Guacamole vendor firmware blob (SHA-256
+  `36438cefa7206dac9ef150b613418d5912c3eb69ed4e0084798602985b43470d`).
+- Ramdisk configuration is UTF-8/LF only. `.gitattributes` normalizes supported
+  text formats and CI rejects any remaining carriage-return bytes.
 
 ## Maintenance rules
 
@@ -57,6 +76,8 @@ layout. All four patches apply cleanly with
 5. Preserve the exact-H.40 OEM library hash gate and fail closed on ambiguity.
 6. A successful compile must upload its binaries before optional packaging or
    diagnostics can fail.
+7. Do not expand decryption beyond Android user 0 without separate physical
+   validation and an explicit support-policy change.
 
 Version numbers belong in Git history and release notes, not filenames. Future
 fixes should update the appropriate final patch instead of adding another

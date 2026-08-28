@@ -23,6 +23,9 @@ MTK_E2FSCK = (
     "    exec /sbin/e2fsck -y /dev/block/platform/mtk-msdc.0/by-name/userdata\n"
 )
 MODEM_WAIT = "    wait /dev/block/bootdevice/by-name/modem\n"
+EARLY_HEALTHD_START = "    start healthd\n"
+LEGACY_CPUACCT_MOUNT = "    mount cgroup none /acct cpuacct\n"
+SYSTEM_BACKGROUND_WRITEPID = "    writepid /dev/cpuset/system-background/tasks\n"
 DUPLICATE_CONFIGFS_MOUNT = (
     "on fs && property:sys.usb.configfs=1\n"
     "    mount configfs none /config\n"
@@ -32,6 +35,53 @@ PERSIST_FSTAB = (
     "defaults                                                        defaults\n"
 )
 OP2_FLAG_PREFIX = "/op2"
+
+QSEECOMD_SERVICE = """service qseecomd /system/bin/qseecomd
+    disabled
+    seclabel u:r:recovery:s0
+"""
+
+GATEKEEPERD_SERVICE = """service gatekeeperd /system/bin/gatekeeperd /data/misc/gatekeeper
+    seclabel u:r:recovery:s0
+"""
+GATEKEEPERD_SERVICE_DISABLED = """service gatekeeperd /system/bin/gatekeeperd /data/misc/gatekeeper
+    disabled
+    seclabel u:r:recovery:s0
+"""
+
+VNDSERVICEMANAGER_SERVICE = """service vndservicemanager /vendor/bin/vndservicemanager /dev/vndbinder
+    seclabel u:r:recovery:s0
+"""
+VNDSERVICEMANAGER_SERVICE_DISABLED = """service vndservicemanager /vendor/bin/vndservicemanager /dev/vndbinder
+    disabled
+    seclabel u:r:recovery:s0
+"""
+
+IRSC_UTIL_SERVICE = """service irsc_util /system/bin/irsc_util "/vendor/etc/sec_config"
+    user root
+    oneshot
+    seclabel u:r:recovery:s0
+"""
+IRSC_UTIL_SERVICE_DISABLED = """service irsc_util /system/bin/irsc_util "/vendor/etc/sec_config"
+    disabled
+    user root
+    oneshot
+    seclabel u:r:recovery:s0
+"""
+
+WPA_SUPPLICANT_SERVICE = (
+    "service wpa_supplicant /system/bin/wpa_supplicant \\\n"
+    "    -Dnl80211 -iwlan0 -dd -O/data/misc/wifi/sockets \\\n"
+    "    -c/data/misc/wifi/wpa_supplicant.conf\n"
+    "    seclabel u:r:recovery:s0\n"
+)
+WPA_SUPPLICANT_SERVICE_DISABLED = (
+    "service wpa_supplicant /system/bin/wpa_supplicant \\\n"
+    "    -Dnl80211 -iwlan0 -dd -O/data/misc/wifi/sockets \\\n"
+    "    -c/data/misc/wifi/wpa_supplicant.conf\n"
+    "    disabled\n"
+    "    seclabel u:r:recovery:s0\n"
+)
 
 DUPLICATE_USB_OWNER = """on property:sys.usb.ffs.ready=1
     mkdir /config/usb_gadget/g1/configs/b.1 0777 shell shell
@@ -86,6 +136,8 @@ on property:sys.usb.config=mtp,adb && property:sys.usb.ffs.ready=1 && property:s
 """
 
 PAYLOADS = (
+    "system/usr/share/zoneinfo/tzdata",
+    "vendor/firmware/aw8697_rtp.bin",
     "vendor/firmware/aw8697_haptic_170.bin",
     "vendor/firmware/40ms_RTP_170Hz.bin",
     "vendor/lib64/libspl.so",
@@ -98,11 +150,24 @@ def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def write_text_lf(path: Path, text: str) -> None:
+    with path.open("w", encoding="utf-8", newline="\n") as stream:
+        stream.write(text)
+
+
 def replace_once(text: str, old: str, new: str, label: str) -> str:
     count = text.count(old)
     if count != 1:
         raise SystemExit(f"{label}: expected one exact anchor, found {count}")
     return text.replace(old, new, 1)
+
+
+def drop_exact_lines(text: str, line: str, expected: int, label: str) -> str:
+    lines = text.splitlines(keepends=True)
+    count = sum(candidate == line for candidate in lines)
+    if count != expected:
+        raise SystemExit(f"{label}: expected {expected} exact anchors, found {count}")
+    return "".join(candidate for candidate in lines if candidate != line)
 
 
 def drop_op2_flag(path: Path) -> bool:
@@ -114,7 +179,7 @@ def drop_op2_flag(path: Path) -> bool:
         raise SystemExit(f"{path}: duplicate /op2 flags")
     if not matches:
         return False
-    path.write_text("".join(line for line in lines if line not in matches), encoding="utf-8")
+    write_text_lf(path, "".join(line for line in lines if line not in matches))
     return True
 
 
@@ -142,6 +207,42 @@ def main() -> None:
     init_rc = replace_once(init_rc, MTK_E2FSCK, "", "MediaTek e2fsck cleanup")
     init_rc = replace_once(init_rc, MODEM_WAIT, "", "obsolete modem wait")
     init_rc = replace_once(
+        init_rc, EARLY_HEALTHD_START, "", "premature health service start"
+    )
+    init_rc = replace_once(
+        init_rc, LEGACY_CPUACCT_MOUNT, "", "duplicate cpuacct mount"
+    )
+    init_rc = drop_exact_lines(
+        init_rc,
+        SYSTEM_BACKGROUND_WRITEPID,
+        3,
+        "missing recovery cpuset writes",
+    )
+    init_rc = replace_once(
+        init_rc,
+        GATEKEEPERD_SERVICE,
+        GATEKEEPERD_SERVICE_DISABLED,
+        "gatekeeper explicit-start service",
+    )
+    init_rc = replace_once(
+        init_rc,
+        VNDSERVICEMANAGER_SERVICE,
+        VNDSERVICEMANAGER_SERVICE_DISABLED,
+        "unused vendor service manager",
+    )
+    init_rc = replace_once(
+        init_rc,
+        IRSC_UTIL_SERVICE,
+        IRSC_UTIL_SERVICE_DISABLED,
+        "unused IRSC utility",
+    )
+    init_rc = replace_once(
+        init_rc,
+        WPA_SUPPLICANT_SERVICE,
+        WPA_SUPPLICANT_SERVICE_DISABLED,
+        "unused recovery Wi-Fi service",
+    )
+    init_rc = replace_once(
         init_rc,
         DUPLICATE_CONFIGFS_MOUNT,
         "on fs && property:sys.usb.configfs=1\n",
@@ -161,17 +262,17 @@ def main() -> None:
     init_rc = init_rc[:none_at] + tail
     init_rc = replace_once(init_rc, MTP_RULES_ANCHOR, MTP_RULES_ANCHOR + MTP_RULES,
                            "MTP rule insertion")
-    init_path.write_text(init_rc, encoding="utf-8")
+    write_text_lf(init_path, init_rc)
 
     qcom_rc = replace_once(read_text(qcom_path), DUPLICATE_USB_OWNER, "",
                            "duplicate Qualcomm USB owner")
-    qcom_path.write_text(qcom_rc, encoding="utf-8")
+    write_text_lf(qcom_path, qcom_rc)
 
     fstab = replace_once(read_text(fstab_path), PERSIST_FSTAB, "",
                          "duplicate persist entry")
-    fstab_path.write_text(fstab, encoding="utf-8")
+    write_text_lf(fstab_path, fstab)
     changed_flags = [
-        str(path.relative_to(root))
+        path.relative_to(root).as_posix()
         for path in (root / "etc/twrp.flags", root / "system/etc/twrp.flags")
         if drop_op2_flag(path)
     ]
@@ -195,6 +296,30 @@ def main() -> None:
             and MTP_RULES.strip() in read_text(init_path)
         ),
         "obsolete_modem_wait_removed": MODEM_WAIT not in read_text(init_path),
+        "premature_healthd_start_removed": (
+            EARLY_HEALTHD_START not in read_text(init_path)
+        ),
+        "duplicate_cpuacct_mount_removed": (
+            LEGACY_CPUACCT_MOUNT not in read_text(init_path)
+        ),
+        "missing_cpuset_writes_removed": (
+            all(
+                line != SYSTEM_BACKGROUND_WRITEPID
+                for line in read_text(init_path).splitlines(keepends=True)
+            )
+        ),
+        "unused_stock_services_disabled": all(
+            service in read_text(init_path)
+            for service in (
+                GATEKEEPERD_SERVICE_DISABLED,
+                VNDSERVICEMANAGER_SERVICE_DISABLED,
+                IRSC_UTIL_SERVICE_DISABLED,
+                WPA_SUPPLICANT_SERVICE_DISABLED,
+            )
+        ),
+        "qseecomd_remains_explicit_start_only": (
+            QSEECOMD_SERVICE in read_text(init_path)
+        ),
         "duplicate_configfs_mount_removed": (
             DUPLICATE_CONFIGFS_MOUNT not in read_text(init_path)
         ),
@@ -214,7 +339,7 @@ def main() -> None:
 
     report = {
         "format": 1,
-        "name": "guacamole-h40-v54-recovery-fixes",
+        "name": "guacamole-h40-rc-recovery-fixes",
         "ramdisk_root": str(root),
         "patched_files": [
             "system/etc/init/init.rc",
@@ -228,7 +353,7 @@ def main() -> None:
     rendered = json.dumps(report, indent=2, sort_keys=True) + "\n"
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
-        args.report.write_text(rendered, encoding="utf-8")
+        write_text_lf(args.report, rendered)
     print(rendered, end="")
 
 
