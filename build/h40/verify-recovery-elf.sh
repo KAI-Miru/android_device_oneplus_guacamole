@@ -66,7 +66,7 @@ reject_string() {
 }
 
 check_string dlopen_library 'libdecrypt_recovery.so'
-check_string dlsym_verify \
+reject_string isolated_dlsym_verify \
   '_Z21OplusCredentialVerifyNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEEi'
 check_string dlsym_setup_de_ce '_Z11setup_de_cei'
 check_string dlsym_get_password_type '_Z17get_password_typei'
@@ -86,6 +86,12 @@ if grep -Fqx -- \
   "$all_strings"
 then
   adapter_version=v4-hybrid
+  if grep -Fqx -- \
+    'I:[H40 V50 HANDOFF] launching exact-H.40 isolated credential gate for user 0' \
+    "$all_strings"
+  then
+    adapter_version=v5-isolated
+  fi
   check_string log_marker_activation \
     'I:Oplus H.40 v4 hybrid activated; TWRP owns metadata mapping, OEM owns DE/CE'
   check_string log_marker_cryptoeng_ready \
@@ -94,8 +100,21 @@ then
     'I:Oplus H.40 v4 hybrid adopting TWRP metadata mapping for %s'
   check_string log_marker_de_bypass \
     'I:Oplus H.40 v4 preserving TWRP metadata mapping and bypassing generic DE/user discovery'
-  check_string log_marker_fatal \
-    'E:Oplus H.40 v4 hybrid adapter entered process-lifetime fatal state: %s'
+  if [[ "$adapter_version" == v5-isolated ]]; then
+    check_string log_marker_fatal \
+      'E:Oplus H.40 v5 hybrid adapter entered process-lifetime fatal state: %s'
+    check_string log_marker_isolated_launch \
+      'I:[H40 V50 HANDOFF] launching exact-H.40 isolated credential gate for user 0'
+    check_string log_marker_isolated_accept \
+      'I:[H40 V50 HANDOFF] OEM credential accepted; requesting modern SP unwrap'
+    check_string log_marker_credential_success \
+      'I:[H40 V50 HANDOFF] modern user 0 CE postcondition satisfied'
+    reject_string old_inprocess_fatal \
+      'E:Oplus H.40 v4 hybrid adapter entered process-lifetime fatal state: %s'
+  else
+    check_string log_marker_fatal \
+      'E:Oplus H.40 v4 hybrid adapter entered process-lifetime fatal state: %s'
+  fi
   check_string log_marker_metadata_failclosed \
     'E:Oplus H.40 v4 TWRP metadata mapping failed after runtime activation; refusing FDE fallback'
   check_string log_marker_handoff_failclosed \
@@ -124,8 +143,10 @@ check_string log_marker_active_unavailable \
   'E:Oplus H.40 active adapter returned unavailable; refusing generic credential fallback'
 check_string log_marker_no_lock_success \
   'I:Oplus H.40 v3 no-lock user 0 CE postcondition satisfied'
-check_string log_marker_credential_success \
-  'I:Oplus H.40 v3 user 0 CE postcondition satisfied'
+if [[ "$adapter_version" != v5-isolated ]]; then
+  check_string log_marker_credential_success \
+    'I:Oplus H.40 v3 user 0 CE postcondition satisfied'
+fi
 
 sha256sum "$recovery_elf" > "$report_dir/recovery-elf.sha256"
 {
@@ -136,11 +157,11 @@ sha256sum "$recovery_elf" > "$report_dir/recovery-elf.sha256"
 {
   echo "result=pass"
   echo "adapter_version=$adapter_version"
-  echo "required_dlsym_strings=5"
+  echo "required_recovery_dlsym_strings=4"
+  echo "isolated_verify_symbol=absent_from_recovery"
   echo "required_runtime_strings=3"
   echo "dlopen_library_string=present"
   echo "dt_needed_libdl=present"
   echo "dt_needed_libdecrypt_recovery=absent"
   echo "binary_uploaded=false"
 } | tee "$report_dir/adapter-verification.txt"
-

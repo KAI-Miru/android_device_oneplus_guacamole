@@ -375,8 +375,16 @@ jobs:
             "$report/keystore2.strings"
           grep -Fq 'H40_RECOVERY_BINDER_STABILITY_V0_V52' \
             "$report/libbinder.strings"
-          grep -Fq '/system/lib64/libdecrypt_recovery.so' \
-            "$report/credential-helper.strings"
+          for marker in \
+              '/system/lib64/libdecrypt_recovery.so' \
+              '_Z21OplusCredentialVerifyNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEEi' \
+              '_Z11setup_de_cei' \
+              '_Z17get_password_typei'; do
+            if ! grep -Fqx -- "$marker" "$report/credential-helper.strings"; then
+              echo "missing required isolated credential-helper marker: $marker" >&2
+              exit 1
+            fi
+          done
           grep -Fq 'Requesting program interpreter: /system/bin/linker64' \
             "$report/credential-helper.program-headers"
 
