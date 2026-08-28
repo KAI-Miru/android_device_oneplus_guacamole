@@ -332,11 +332,11 @@ jobs:
           install -D -m 0644 "$device/recovery/root/twres/images/mirumiru.png" \
             "$recovery_root/twres/images/mirumiru.png"
 
-          # bash_twrp/nano_twrp install their configuration into the recovery
-          # tree, but Android keeps the compiled executables and libncurses in
-          # the product system tree.  Stage the complete feature entry points
-          # before mkbootfs so the private-runtime closure can audit and carry
-          # them.  zip follows the same product-only install pattern.
+          # Android keeps these compiled feature entry points in the product
+          # system tree.  Stage the executables, dependency, and companion
+          # assets explicitly before mkbootfs instead of depending on phony
+          # post-install side effects.  The private-runtime builder then audits
+          # and carries the complete bundles.
           install -D -m 0755 "$product_root/system/system_ext/bin/bash" \
             "$recovery_root/system/bin/bash"
           install -D -m 0755 "$product_root/system/system_ext/bin/nano" \
@@ -345,6 +345,17 @@ jobs:
             "$recovery_root/system/bin/zip"
           install -D -m 0644 "$product_root/system/system_ext/lib64/libncurses.so" \
             "$recovery_root/system/lib64/libncurses.so"
+          install -d -m 0755 "$recovery_root/system/etc/bash"
+          cp -a "$product_root/system/system_ext/etc/bash/." \
+            "$recovery_root/system/etc/bash/"
+          install -d -m 0755 "$recovery_root/system/etc/nano"
+          cp -a "$product_root/system/system_ext/etc/nano/." \
+            "$recovery_root/system/etc/nano/"
+          install -d -m 0755 "$recovery_root/system/etc/terminfo"
+          cp -a external/libncurses/lib/terminfo/. \
+            "$recovery_root/system/etc/terminfo/"
+          install -d -m 0755 "$recovery_root/sbin"
+          ln -sfn /system/bin/bash "$recovery_root/sbin/bash"
           test -L "$recovery_root/sbin/bash"
           test -f "$recovery_root/system/etc/bash/bashrc"
           test -f "$recovery_root/system/etc/init/nano.rc"
