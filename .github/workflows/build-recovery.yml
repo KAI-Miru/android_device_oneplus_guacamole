@@ -247,7 +247,10 @@ jobs:
           export BUILD_HOSTNAME=github-actions
           source build/envsetup.sh
           lunch twrp_guacamole-eng
-          mka recovery -j"$BUILD_JOBS" 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+          # The stock-first packer regenerates the staged recovery cpio after
+          # adding the audited userspace bundle, so build the host ramdisk
+          # generator alongside the recovery executable.
+          mka recovery mkbootfs -j"$BUILD_JOBS" 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
 
       - name: Stage compiled payload failsafe
         id: compiled_failsafe
