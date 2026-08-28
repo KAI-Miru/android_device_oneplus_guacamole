@@ -12,6 +12,7 @@ from pathlib import Path
 
 import newc
 from make_private_twrp_overlay import PRIVATE_INTERPRETER, patch_exact_cstring, patch_pt_interp
+from make_stock_patch_overlay import LEGACY_INSTALLER_SHELL, LEGACY_INSTALLER_SHELL_TARGET
 from repack_boot_v2 import AVB_FOOTER_MAGIC, parse_boot_v2
 
 
@@ -127,6 +128,43 @@ def main() -> None:
     require(final_index["system/bin/recovery"] == stock_index["system/bin/recovery"], "stock recovery changed")
     require(final_index["sepolicy"] == stock_index["sepolicy"], "stock SELinux policy changed")
 
+    sbin = final_index.get("sbin")
+    require(
+        sbin is not None and sbin.mode & 0o170000 == 0o040000,
+        "legacy ZIP installer parent is not a directory",
+    )
+    installer_shell = final_index.get(LEGACY_INSTALLER_SHELL)
+    require(installer_shell is not None, "legacy ZIP installer shell route is absent")
+    require(
+        installer_shell.mode & 0o170000 == 0o120000,
+        "legacy ZIP installer shell route is not a symlink",
+    )
+    require(
+        installer_shell.data == LEGACY_INSTALLER_SHELL_TARGET,
+        "legacy ZIP installer shell route has the wrong target",
+    )
+    system_shell = final_index.get(LEGACY_INSTALLER_SHELL_TARGET.lstrip(b"/").decode("ascii"))
+    require(system_shell is not None, "legacy ZIP installer shell target is absent")
+    require(
+        system_shell.mode & 0o170000 == 0o100000 and system_shell.mode & 0o111 != 0,
+        "legacy ZIP installer shell target is not a regular executable",
+    )
+    installer_shell_records = [
+        record
+        for record in stock_patch["records"]
+        if record.get("target") == LEGACY_INSTALLER_SHELL
+    ]
+    require(
+        len(installer_shell_records) == 1
+        and installer_shell_records[0].get("entry_type") == "symlink"
+        and installer_shell_records[0].get("symlink_target")
+        == LEGACY_INSTALLER_SHELL_TARGET.decode("ascii")
+        and installer_shell_records[0].get("purpose") == "legacy_recovery_zip_installer"
+        and installer_shell_records[0].get("target_bytes") == len(installer_shell.data)
+        and installer_shell_records[0].get("target_sha256") == sha256(installer_shell.data),
+        "legacy ZIP installer shell route is not audited in the stock overlay manifest",
+    )
+
     raw_recovery = (args.recovery_root / "system/bin/recovery").read_bytes()
     relocated, _ = patch_pt_interp(raw_recovery, PRIVATE_INTERPRETER, expected_old="/system/bin/linker64")
     relocated, replacements = patch_exact_cstring(relocated, "/system/bin/recovery", "/system/tw/bin/r")
@@ -189,6 +227,7 @@ def main() -> None:
             "stock_recovery_exact": True,
             "stock_policy_exact": True,
             "private_recovery_exact_compiled": True,
+            "legacy_zip_installer_shell_route_present": True,
             "universal_owner_decryption_markers_present": True,
             "oem_verifier_isolated": True,
             "mount_table_rc2_exact": True,

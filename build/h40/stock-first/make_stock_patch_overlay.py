@@ -33,6 +33,9 @@ PRIVATE_CONTEXTS = (
     "/system/tw/lib64(/.*)?       u:object_r:system_lib_file:s0",
 )
 
+LEGACY_INSTALLER_SHELL = "sbin/sh"
+LEGACY_INSTALLER_SHELL_TARGET = b"/system/bin/sh"
+
 CURATED_TWRP_FLAGS = """# Stock-first H.40 hybrid for guacamole's physical, slotted A/B layout.
 /boot            emmc     /dev/block/bootdevice/by-name/boot       flags=slotselect
 /system_root     ext4     /dev/block/bootdevice/by-name/system     flags=slotselect;backup=0;fsflags=ro
@@ -314,6 +317,38 @@ def main() -> None:
             raise SystemExit(f"stock compiled policy lacks required existing type {required_type.decode()}")
 
     next_ino = max(entry.ino for entry in archive_entries) + 1
+
+    sbin = archive.get("sbin")
+    if sbin is None or sbin.mode & 0o170000 != 0o040000:
+        raise SystemExit("Guacamole stock lacks the /sbin directory")
+    stock_shell = archive.get(LEGACY_INSTALLER_SHELL_TARGET.lstrip(b"/").decode("ascii"))
+    if stock_shell is None:
+        raise SystemExit("Guacamole stock lacks /system/bin/sh")
+    if stock_shell.mode & 0o170000 != 0o100000 or stock_shell.mode & 0o111 == 0:
+        raise SystemExit("Guacamole stock /system/bin/sh is not a regular executable")
+    if LEGACY_INSTALLER_SHELL in archive:
+        raise SystemExit("Guacamole stock unexpectedly already contains /sbin/sh")
+    installer_shell = newc.regular_file(
+        LEGACY_INSTALLER_SHELL,
+        LEGACY_INSTALLER_SHELL_TARGET,
+        mode=0o120777,
+        ino=next_ino,
+    )
+    next_ino += 1
+    overlay.append(installer_shell)
+    records.append(
+        {
+            "kind": "addition",
+            "source": "stock:system/bin/sh",
+            "target": LEGACY_INSTALLER_SHELL,
+            "target_sha256": sha256(installer_shell.data),
+            "target_bytes": len(installer_shell.data),
+            "entry_type": "symlink",
+            "symlink_target": LEGACY_INSTALLER_SHELL_TARGET.decode("ascii"),
+            "purpose": "legacy_recovery_zip_installer",
+        }
+    )
+
     for target in ("etc/twrp.flags", "system/etc/twrp.flags"):
         if target in archive:
             raise SystemExit(f"stock archive unexpectedly already contains {target}")
