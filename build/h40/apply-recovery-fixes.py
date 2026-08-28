@@ -30,12 +30,6 @@ DUPLICATE_CONFIGFS_MOUNT = (
     "on fs && property:sys.usb.configfs=1\n"
     "    mount configfs none /config\n"
 )
-PERSIST_FSTAB = (
-    "/dev/block/bootdevice/by-name/persist      /persist        ext4    "
-    "defaults                                                        defaults\n"
-)
-OP2_FLAG_PREFIX = "/op2"
-
 QSEECOMD_SERVICE = """service qseecomd /system/bin/qseecomd
     disabled
     seclabel u:r:recovery:s0
@@ -136,14 +130,32 @@ on property:sys.usb.config=mtp,adb && property:sys.usb.ffs.ready=1 && property:s
 """
 
 PAYLOADS = (
+    "system/etc/recovery.fstab",
+    "system/etc/twrp.flags",
     "system/usr/share/zoneinfo/tzdata",
+    "system/lib64/libspl.so",
+    "system/lib64/libops.so",
     "vendor/firmware/aw8697_rtp.bin",
     "vendor/firmware/aw8697_haptic_170.bin",
     "vendor/firmware/40ms_RTP_170Hz.bin",
+    "vendor/firmware/80ms_RTP_170Hz.bin",
     "vendor/lib64/libspl.so",
     "vendor/lib64/libops.so",
     "etc/cgroups.json",
 )
+
+ROOT_MOUNT_TABLES = {
+    "etc/recovery.fstab": "system/etc/recovery.fstab",
+    "etc/twrp.flags": "system/etc/twrp.flags",
+}
+
+PHANTOM_MOUNT_POINTS = {
+    "/special_preload",
+    "/external_sd",
+    "/usb_otg",
+    "/opporeserve",
+    "/op2",
+}
 
 
 def read_text(path: Path) -> str:
@@ -168,19 +180,6 @@ def drop_exact_lines(text: str, line: str, expected: int, label: str) -> str:
     if count != expected:
         raise SystemExit(f"{label}: expected {expected} exact anchors, found {count}")
     return "".join(candidate for candidate in lines if candidate != line)
-
-
-def drop_op2_flag(path: Path) -> bool:
-    if not path.exists():
-        return False
-    lines = read_text(path).splitlines(keepends=True)
-    matches = [line for line in lines if line.lstrip().startswith(OP2_FLAG_PREFIX)]
-    if len(matches) > 1:
-        raise SystemExit(f"{path}: duplicate /op2 flags")
-    if not matches:
-        return False
-    write_text_lf(path, "".join(line for line in lines if line not in matches))
-    return True
 
 
 def sha256(path: Path) -> str:
@@ -268,17 +267,6 @@ def main() -> None:
                            "duplicate Qualcomm USB owner")
     write_text_lf(qcom_path, qcom_rc)
 
-    fstab = replace_once(read_text(fstab_path), PERSIST_FSTAB, "",
-                         "duplicate persist entry")
-    write_text_lf(fstab_path, fstab)
-    changed_flags = [
-        path.relative_to(root).as_posix()
-        for path in (root / "etc/twrp.flags", root / "system/etc/twrp.flags")
-        if drop_op2_flag(path)
-    ]
-    if not changed_flags:
-        raise SystemExit("hybrid ramdisk contains no /op2 TWRP flag to remove")
-
     copied = {}
     for relative in PAYLOADS:
         source = DEVICE_ROOT / relative
@@ -288,6 +276,35 @@ def main() -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
         copied[relative] = {"bytes": target.stat().st_size, "sha256": sha256(target)}
+
+    # Stock H.40's root fstab exposes nonexistent preload/reserve/SD devices,
+    # duplicates USB OTG, and has two System rows. Replace both root tables
+    # with the audited device tables used by source-built recovery.
+    for target_relative, source_relative in ROOT_MOUNT_TABLES.items():
+        source = DEVICE_ROOT / source_relative
+        target = root / target_relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        copied[target_relative] = {
+            "bytes": target.stat().st_size,
+            "sha256": sha256(target),
+            "source": source_relative,
+        }
+
+    fstab_lines = [
+        line.split()
+        for line in read_text(fstab_path).splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    flag_lines = [
+        line.split()
+        for line in read_text(root / "etc/twrp.flags").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    mount_points = {tokens[1] for tokens in fstab_lines}
+    mount_points.update(tokens[0] for tokens in flag_lines)
+    system_entries = [tokens for tokens in fstab_lines if tokens[1] == "/"]
+    cache_entries = [tokens for tokens in fstab_lines if tokens[1] == "/cache"]
 
     checks = {
         "duplicate_usb_owner_removed": DUPLICATE_USB_OWNER not in read_text(qcom_path),
@@ -324,14 +341,29 @@ def main() -> None:
             DUPLICATE_CONFIGFS_MOUNT not in read_text(init_path)
         ),
         "mediatek_e2fsck_removed": MTK_E2FSCK not in read_text(init_path),
-        "persist_duplicate_removed": PERSIST_FSTAB not in read_text(fstab_path),
-        "op2_duplicate_removed": all(
-            not any(
-                line.lstrip().startswith(OP2_FLAG_PREFIX)
-                for line in read_text(path).splitlines()
-            )
-            for path in (root / "etc/twrp.flags", root / "system/etc/twrp.flags")
-            if path.exists()
+        "audited_mount_tables_installed": all(
+            sha256(root / target_relative) == sha256(DEVICE_ROOT / source_relative)
+            for target_relative, source_relative in ROOT_MOUNT_TABLES.items()
+        ),
+        "phantom_mount_points_removed": PHANTOM_MOUNT_POINTS.isdisjoint(mount_points),
+        "one_canonical_system_entry": (
+            len(system_entries) == 1
+            and system_entries[0][0]
+            == "/dev/block/bootdevice/by-name/system"
+        ),
+        "op2_retained_as_cache": (
+            len(cache_entries) == 1
+            and cache_entries[0][0]
+            == "/dev/block/bootdevice/by-name/op2"
+        ),
+        "single_usb_storage_entry": sum(
+            tokens[0] == "/usbstorage" for tokens in flag_lines
+        ) == 1,
+        "qsee_plugins_visible_after_vendor_mount": all(
+            (root / f"system/lib64/{name}").is_file()
+            and sha256(root / f"system/lib64/{name}")
+            == sha256(root / f"vendor/lib64/{name}")
+            for name in ("libspl.so", "libops.so")
         ),
     }
     if not all(checks.values()):
@@ -345,7 +377,9 @@ def main() -> None:
             "system/etc/init/init.rc",
             "init.recovery.qcom.rc",
             "etc/recovery.fstab",
-            *changed_flags,
+            "etc/twrp.flags",
+            "system/etc/recovery.fstab",
+            "system/etc/twrp.flags",
         ],
         "copied_payloads": copied,
         "checks": checks,

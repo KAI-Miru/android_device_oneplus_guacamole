@@ -44,9 +44,9 @@ layout. All four patches apply cleanly with
 - `package-keystore2-runtime.py` copies the exact private dependency closure,
   changes only Keystore2's interpreter, and emits merge-only context shims.
 - `apply-recovery-fixes.py` removes conflicting stock-init USB ownership and
-  stale mounts/waits, suppresses unavailable stock services, then installs the
-  MTP, cgroup, timezone, haptics, and QSEE payloads required by the hybrid
-  ramdisk.
+  stale waits, replaces the stock mount tables with the audited Guacamole
+  tables, suppresses unavailable stock services, then installs the MTP,
+  cgroup, timezone, haptics, and QSEE payloads required by the hybrid ramdisk.
 
 ## Release support policy
 
@@ -56,13 +56,27 @@ layout. All four patches apply cleanly with
 - `qseecomd` remains disabled by default and is started only by the accepted
   credential flow. Its proprietary binary hard-codes the listener table, so
   the matching stock `libspl.so` and `libops.so` plugins are retained instead
-  of binary-patching the security daemon.
+  of binary-patching the security daemon. They are mirrored into
+  `/system/lib64` because mounting the real `/vendor` hides recovery's embedded
+  `/vendor/lib64` before `qseecomd` starts.
 - The recovery-fix transformer removes the premature health-service start and
   legacy cpuacct/cpuset commands. It also makes `gatekeeperd` explicit-start
   only and disables unavailable `vndservicemanager`, `irsc_util`, and recovery
   Wi-Fi services.
 - `aw8697_rtp.bin` is the 72,000-byte Guacamole vendor firmware blob (SHA-256
   `36438cefa7206dac9ef150b613418d5912c3eb69ed4e0084798602985b43470d`).
+- `80ms_RTP_170Hz.bin` is the 1,979-byte OnePlus AW8697 170 Hz firmware blob
+  (SHA-256
+  `98fb90d52ddf8ce2e5825d057c67be0237d78e6c6df439c2d8fbceff136ab4ff`).
+  It is embedded with the other AW8697 firmware so touch vibration does not
+  depend on mounting the installed ROM's `/vendor`.
+- `op2` is the device's real 256 MiB ext4 cache partition and is intentionally
+  mounted only as `/cache`. The nonexistent `special_preload`, `opporeserve`,
+  and external-SD entries are omitted; USB OTG is exposed once as
+  `/usbstorage`.
+- System has one canonical fstab entry. TWRP probes its current filesystem, so
+  both ext4 and EROFS installations remain mountable without duplicate System
+  rows in the Mount page.
 - Ramdisk configuration is UTF-8/LF only. `.gitattributes` normalizes supported
   text formats and CI rejects any remaining carriage-return bytes.
 

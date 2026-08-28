@@ -1,20 +1,24 @@
 # Android recovery fstab for guacamole's physical, slotted A/B layout.
 #
 # The supplied H.40 images are ext4, while some custom Android 12 ROMs use
-# EROFS. Keep both alternatives read-only; TWRP probes the actual filesystem.
+# EROFS. Keep one canonical System entry: TWRP probes the block device and
+# updates Current_File_System before mounting it. Duplicate / entries become
+# duplicate System rows because TWRP normalizes both to /system_root.
 # The unsuffixed by-name paths are intentional: slotselect adds _a or _b.
 
 #<src>                                      <mnt_point>  <type>  <mnt_flags and options>  <fs_mgr_flags>
 /dev/block/bootdevice/by-name/system        /             ext4    ro,barrier=1,discard     wait,slotselect
-/dev/block/bootdevice/by-name/system        /             erofs   ro                       wait,slotselect
 /dev/block/bootdevice/by-name/vendor        /vendor       ext4    ro,barrier=1,discard     wait,slotselect
 /dev/block/bootdevice/by-name/vendor        /vendor       erofs   ro                       wait,slotselect
 /dev/block/bootdevice/by-name/odm           /odm          ext4    ro,barrier=1,discard     wait,slotselect
 /dev/block/bootdevice/by-name/odm           /odm          erofs   ro                       wait,slotselect
 
 /dev/block/bootdevice/by-name/metadata  /metadata  ext4  noatime,nosuid,nodev,discard  wait,check,formattable
-/dev/block/bootdevice/by-name/userdata  /data      ext4  noatime,nosuid,nodev,barrier=1,noauto_da_alloc,discard,inlinecrypt  latemount,wait,check,formattable,fileencryption=ice,keydirectory=/metadata/vold/metadata_encryption,quota,reservedsize=128M
-/dev/block/bootdevice/by-name/userdata  /data      f2fs  noatime,nosuid,nodev,discard,inlinecrypt                           latemount,wait,check,formattable,fileencryption=ice,keydirectory=/metadata/vold/metadata_encryption,quota,reservedsize=128M
+# Guacamole has no separate cache by-name node. OnePlus formats the real op2
+# partition as ext4 and stock/TWRP use it for /cache/recovery state.
+/dev/block/bootdevice/by-name/op2       /cache     ext4  noatime,nosuid,nodev,barrier=1,data=ordered  wait,check
+/dev/block/bootdevice/by-name/userdata  /data      ext4  noatime,nosuid,nodev,barrier=1,noauto_da_alloc,discard,inlinecrypt  wait,check,formattable,fileencryption=ice,keydirectory=/metadata/vold/metadata_encryption,quota
+/dev/block/bootdevice/by-name/userdata  /data      f2fs  noatime,nosuid,nodev,discard,inlinecrypt                           wait,check,formattable,fileencryption=ice,keydirectory=/metadata/vold/metadata_encryption,quota
 
 # update_engine requires a misc entry to discover the boot device.
 /dev/block/bootdevice/by-name/misc      /misc      emmc  defaults  defaults
