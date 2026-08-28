@@ -191,7 +191,9 @@ jobs:
 
       - name: Configure and assert recovery build
         run: |
-          set -euo pipefail
+          # Android's envsetup.sh intentionally probes unset shell variables.
+          # Keep errexit and pipefail here, but do not enable nounset.
+          set -eo pipefail
           cd "$RUNNER_TEMP/twrp"
           export ALLOW_MISSING_DEPENDENCIES=true
           export BUILD_USERNAME=KAI-Miru
