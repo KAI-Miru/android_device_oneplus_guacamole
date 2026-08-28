@@ -51,6 +51,11 @@ TARGET_USE_QCOM_BIONIC_OPTIMIZATION := true
 TARGET_SCREEN_DENSITY := 560
 TARGET_SYSTEM_PROP += $(DEVICE_PATH)/system.prop
 
+# Required values for the sensor Soong namespace inherited from
+# sm8150-common. These are Guacamole's panel-space ALS coordinates.
+SOONG_CONFIG_ONEPLUS_MSMNILE_SENSORS_ALS_POS_X := 1000
+SOONG_CONFIG_ONEPLUS_MSMNILE_SENSORS_ALS_POS_Y := 260
+
 # The full-ROM common tree sets this for SystemUI; recovery does not build it.
 TARGET_SURFACEFLINGER_UDFPS_LIB :=
 
