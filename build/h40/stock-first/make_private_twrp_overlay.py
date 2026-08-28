@@ -575,7 +575,12 @@ def main() -> None:
     # Command-line helpers extend the baseline contract.  Replacement semantics
     # previously let the workflow silently discard new mandatory defaults.
     required_helpers = merge_unique_paths(DEFAULT_REQUIRED_HELPERS, args.required_helper)
-    optional_helpers = merge_unique_paths(DEFAULT_OPTIONAL_HELPERS, args.optional_helper)
+    required_helper_set = set(required_helpers)
+    optional_helpers = [
+        relative
+        for relative in merge_unique_paths(DEFAULT_OPTIONAL_HELPERS, args.optional_helper)
+        if relative not in required_helper_set
+    ]
     requested_helpers, included_helpers, helper_roles = collect_helper_sources(
         source_entries,
         required_helpers,
