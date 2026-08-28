@@ -247,10 +247,10 @@ jobs:
           export BUILD_HOSTNAME=github-actions
           source build/envsetup.sh
           lunch twrp_guacamole-eng
-          # The stock-first packer regenerates the staged recovery cpio after
-          # adding the audited userspace bundle, so build the host ramdisk
-          # generator alongside the recovery executable.
-          mka recovery mkbootfs -j"$BUILD_JOBS" 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+          # A module-only recovery build does not expand PRODUCT_PACKAGES.
+          # Build fastbootd explicitly for the private helper bundle, plus the
+          # host generator used to repack the augmented recovery tree.
+          mka recovery fastbootd mkbootfs -j"$BUILD_JOBS" 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
 
       - name: Stage compiled payload failsafe
         id: compiled_failsafe
