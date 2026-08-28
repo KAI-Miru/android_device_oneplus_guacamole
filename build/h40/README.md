@@ -17,7 +17,9 @@ Patch SHA-256 values:
 
 ```text
 c196b8bd497039ae9ec7587212d47e0fe105867982b4ee06a02bbe30507b464e  recovery.patch
+a79e9a761ded5640f4413c48191fee3bc511e7eb15f316cbac8aa0f6b264298d  recovery-no-credential.patch
 034b64defe6e7ff10b91e8948e0f2ac19da3a7f434bb03e9e6351fba283f2cda  vold.patch
+ee2472e7bb81f320d2fd473cedadc3db2f475fd15551beb3c4948d73522e7199  vold-no-credential.patch
 0cd8269b20fa83fcfff42eee02a6a0be8a0d8a74bb2ee9baba8449dc26441523  security.patch
 bc1398b4901403a33d7ad80a171ba95974ba2c938558bc10b69ff350e8850895  binder.patch
 ```
@@ -26,18 +28,21 @@ The original patch set was exported by successful GitHub Actions run
 [`33031812198`](https://github.com/KAI-Miru/android_device_oneplus_guacamole/actions/runs/33031812198).
 The recovery patch was subsequently regenerated from the same pinned commit to
 support both an already-mounted dynamic system and the static by-name system
-layout. All four patches apply cleanly with
+layout. All six patches apply cleanly in their documented order with
 `git apply --check --whitespace=error-all` to their pinned commits.
 
 ## Responsibilities
 
-- `recovery.patch` adds the H.40 adapter, isolated credential helper, user-0
-  dispatch, parent-process modern decryption handoff, and universal installed
-  system identity discovery for static and dynamic partition layouts.
-- `vold.patch` is shared byte-for-byte with Hotdog. It implements HIDL
+- `recovery.patch` plus `recovery-no-credential.patch` add the H.40 adapter,
+  isolated credential helper, user-0 dispatch, parent-process credentialed and
+  no-credential handoffs, and universal installed-system identity discovery
+  for static and dynamic partition layouts. The supplement avoids the stock
+  `fscrypt_init_user0_ce()` crash and requires a parent-process CE proof.
+- `vold.patch` plus `vold-no-credential.patch` are shared byte-for-byte with
+  Hotdog. They implement HIDL
   Keymaster compatibility, constructor-safe state, fail-closed `pKMblob`
-  handling, explicit fscrypt key mode, and a guarded CE installer that
-  recognizes both proven Oplus direct-AES layouts at runtime.
+  handling, explicit fscrypt key mode, guarded direct-AES credentialed CE, and
+  a read-only Keymaster-backed no-credential CE installer.
 - `security.patch` grants only the recovery-domain Keystore2 operations needed
   for locksettings namespace 103.
 - `binder.patch` bridges SDK30 raw stability values on kernel Binder while
