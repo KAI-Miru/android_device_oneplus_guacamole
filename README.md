@@ -55,7 +55,9 @@ supported by ColorOS.
 - Decryption: working for user 0 on the tested H.40-based port.
 - ext4, F2FS, and EROFS kernel filesystem support: present on the tested device.
 - ADB: working in ordinary recovery use.
-- MTP and ADB sideload: known USB gadget integration issue; not yet fixed.
+- MTP and ADB sideload: single-owner configfs fix is integrated; device retest
+  is pending.
+- Haptics, cgroup configuration, and required QSEE plugins are included in the
+  hybrid-ramdisk recovery-fix payload.
 
 This project is unofficial and is not affiliated with TeamWin or OnePlus.
-

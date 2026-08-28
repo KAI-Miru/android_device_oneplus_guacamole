@@ -134,7 +134,7 @@ jobs:
           (
             cd "$patch_dir"
             sha256sum --check <<'EOF'
-          bb813e0dc3cfb4f08894178c33d2c237a1636e5e81de93221acae27196c72087  recovery.patch
+          c196b8bd497039ae9ec7587212d47e0fe105867982b4ee06a02bbe30507b464e  recovery.patch
           bf99fa1bcd3c9c73fd94d0a554898df9711332b2dea87e8566a01f6f740be394  vold.patch
           0cd8269b20fa83fcfff42eee02a6a0be8a0d8a74bb2ee9baba8449dc26441523  security.patch
           bc1398b4901403a33d7ad80a171ba95974ba2c938558bc10b69ff350e8850895  binder.patch
@@ -163,6 +163,8 @@ jobs:
           done
 
           grep -Fq '[H40 V51 PARENT]' bootable/recovery/partitionmanager.cpp
+          grep -Fq '[H40 PORTIDENTITY] using mounted dynamic system' \
+            bootable/recovery/oplus_h40_decrypt.cpp
           grep -Fq 'Decrypt_User_H40_Modern' system/vold/Decrypt.cpp
           grep -Fq 'GetKeyUpgradeLock()' system/vold/KeyStorage.cpp
           grep -Fq 'GetKeyDirsToCommit()' system/vold/KeyStorage.cpp
@@ -425,6 +427,63 @@ jobs:
             -C "$recovery_root" twres
           tar -tzf "$GITHUB_WORKSPACE/guacamole-coloros-twres.tar.gz" \
             > "$GITHUB_WORKSPACE/guacamole-coloros-twres.files"
+
+      - name: Package hybrid ramdisk recovery fixes
+        id: recovery_fixes
+        if: ${{ always() && steps.build.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          payload="$GITHUB_WORKSPACE/guacamole-coloros-recovery-fixes"
+          device="$RUNNER_TEMP/twrp/$DEVICE_PATH"
+          mkdir -p "$payload/build/h40"
+
+          install -m 0644 "$device/build/h40/apply-recovery-fixes.py" \
+            "$payload/build/h40/apply-recovery-fixes.py"
+          for relative in \
+              etc/cgroups.json \
+              init.recovery.usb.rc \
+              system/etc/twrp.flags \
+              vendor/firmware/aw8697_haptic_170.bin \
+              vendor/firmware/40ms_RTP_170Hz.bin \
+              vendor/lib64/libspl.so \
+              vendor/lib64/libops.so; do
+            test -s "$device/recovery/root/$relative"
+            install -D -m 0644 "$device/recovery/root/$relative" \
+              "$payload/recovery/root/$relative"
+          done
+
+          python3 -m py_compile "$payload/build/h40/apply-recovery-fixes.py"
+          find "$payload" -type d -name __pycache__ -prune -exec rm -rf '{}' +
+          (
+            cd "$payload"
+            find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
+          ) | tee "$GITHUB_WORKSPACE/guacamole-coloros-recovery-fixes.sha256"
+          tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+            -czf "$GITHUB_WORKSPACE/guacamole-coloros-recovery-fixes.tar.gz" \
+            -C "$GITHUB_WORKSPACE" guacamole-coloros-recovery-fixes
+          tar -tzf "$GITHUB_WORKSPACE/guacamole-coloros-recovery-fixes.tar.gz" \
+            > "$GITHUB_WORKSPACE/guacamole-coloros-recovery-fixes.files"
+          for required in \
+              guacamole-coloros-recovery-fixes/build/h40/apply-recovery-fixes.py \
+              guacamole-coloros-recovery-fixes/recovery/root/etc/cgroups.json \
+              guacamole-coloros-recovery-fixes/recovery/root/vendor/firmware/aw8697_haptic_170.bin \
+              guacamole-coloros-recovery-fixes/recovery/root/vendor/firmware/40ms_RTP_170Hz.bin \
+              guacamole-coloros-recovery-fixes/recovery/root/vendor/lib64/libspl.so \
+              guacamole-coloros-recovery-fixes/recovery/root/vendor/lib64/libops.so; do
+            grep -Fxq "$required" \
+              "$GITHUB_WORKSPACE/guacamole-coloros-recovery-fixes.files"
+          done
+
+      - name: Upload hybrid ramdisk recovery fixes
+        if: ${{ always() && steps.recovery_fixes.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: guacamole-coloros-recovery-fixes
+          if-no-files-found: error
+          path: |
+            guacamole-coloros-recovery-fixes.tar.gz
+            guacamole-coloros-recovery-fixes.files
+            guacamole-coloros-recovery-fixes.sha256
 
       - name: Upload diagnostics
         if: always()

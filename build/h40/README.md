@@ -16,21 +16,24 @@ transform stack.
 Patch SHA-256 values:
 
 ```text
-bb813e0dc3cfb4f08894178c33d2c237a1636e5e81de93221acae27196c72087  recovery.patch
+c196b8bd497039ae9ec7587212d47e0fe105867982b4ee06a02bbe30507b464e  recovery.patch
 bf99fa1bcd3c9c73fd94d0a554898df9711332b2dea87e8566a01f6f740be394  vold.patch
 0cd8269b20fa83fcfff42eee02a6a0be8a0d8a74bb2ee9baba8449dc26441523  security.patch
 bc1398b4901403a33d7ad80a171ba95974ba2c938558bc10b69ff350e8850895  binder.patch
 ```
 
-The patches were exported by successful GitHub Actions run
+The original patch set was exported by successful GitHub Actions run
 [`33031812198`](https://github.com/KAI-Miru/android_device_oneplus_guacamole/actions/runs/33031812198).
-They apply cleanly with `git apply --check --whitespace=error-all` to all four
-pinned commits.
+The recovery patch was subsequently regenerated from the same pinned commit to
+support both an already-mounted dynamic system and the static by-name system
+layout. All four patches apply cleanly with
+`git apply --check --whitespace=error-all` to their pinned commits.
 
 ## Responsibilities
 
 - `recovery.patch` adds the H.40 adapter, isolated credential helper, user-0
-  dispatch, and parent-process modern decryption handoff.
+  dispatch, parent-process modern decryption handoff, and universal installed
+  system identity discovery for static and dynamic partition layouts.
 - `vold.patch` implements HIDL Keymaster compatibility, constructor-safe state,
   fail-closed `pKMblob` handling, explicit fscrypt key mode, and the guarded CE
   key installation path.
@@ -40,6 +43,9 @@ pinned commits.
   preserving Android 12.1's packed representation for Binder RPC.
 - `package-keystore2-runtime.py` copies the exact private dependency closure,
   changes only Keystore2's interpreter, and emits merge-only context shims.
+- `apply-recovery-fixes.py` removes conflicting stock-init USB ownership and
+  stale mounts/waits, then installs the MTP, cgroup, haptics, and QSEE payloads
+  required by the hybrid ramdisk.
 
 ## Maintenance rules
 
@@ -55,4 +61,3 @@ pinned commits.
 Version numbers belong in Git history and release notes, not filenames. Future
 fixes should update the appropriate final patch instead of adding another
 transform layer.
-

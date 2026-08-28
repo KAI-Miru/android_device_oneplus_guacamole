@@ -1,5 +1,5 @@
 diff --git a/Android.mk b/Android.mk
-index 383adca..c83b541 100644
+index e949d035522cd1df7d7e882a7758f3ff2c2516bd..d93531f483b45d6623b1dae00cef2bbf54af088d 100644
 --- a/Android.mk
 +++ b/Android.mk
 @@ -335,6 +335,13 @@ endif
@@ -40,7 +40,7 @@ index 383adca..c83b541 100644
  
 diff --git a/oplus_h40_credential_client.cpp b/oplus_h40_credential_client.cpp
 new file mode 100644
-index 0000000..7c05201
+index 0000000000000000000000000000000000000000..7c0520140a74a763a944e7bdda28aa50a4b93403
 --- /dev/null
 +++ b/oplus_h40_credential_client.cpp
 @@ -0,0 +1,611 @@
@@ -657,7 +657,7 @@ index 0000000..7c05201
 +}  // namespace twrp
 diff --git a/oplus_h40_credential_client.hpp b/oplus_h40_credential_client.hpp
 new file mode 100644
-index 0000000..eef7d3b
+index 0000000000000000000000000000000000000000..eef7d3b98eb03962ed65b137a55e7861b2cdf8ff
 --- /dev/null
 +++ b/oplus_h40_credential_client.hpp
 @@ -0,0 +1,25 @@
@@ -688,7 +688,7 @@ index 0000000..eef7d3b
 +}  // namespace twrp
 diff --git a/oplus_h40_credential_helper.cpp b/oplus_h40_credential_helper.cpp
 new file mode 100644
-index 0000000..74b30a5
+index 0000000000000000000000000000000000000000..74b30a57c05de7b9537dead5a736ec19e1843551
 --- /dev/null
 +++ b/oplus_h40_credential_helper.cpp
 @@ -0,0 +1,764 @@
@@ -1458,7 +1458,7 @@ index 0000000..74b30a5
 +}
 diff --git a/oplus_h40_credential_protocol.hpp b/oplus_h40_credential_protocol.hpp
 new file mode 100644
-index 0000000..45dcc30
+index 0000000000000000000000000000000000000000..45dcc30b55502ed78022479d95eee8f3d14b2764
 --- /dev/null
 +++ b/oplus_h40_credential_protocol.hpp
 @@ -0,0 +1,133 @@
@@ -1597,10 +1597,10 @@ index 0000000..45dcc30
 +}  // namespace twrp
 diff --git a/oplus_h40_decrypt.cpp b/oplus_h40_decrypt.cpp
 new file mode 100644
-index 0000000..367c880
+index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587fccc1312
 --- /dev/null
 +++ b/oplus_h40_decrypt.cpp
-@@ -0,0 +1,1090 @@
+@@ -0,0 +1,1169 @@
 +#include "oplus_h40_decrypt.hpp"
 +
 +#include <android/binder_auto_utils.h>
@@ -1619,6 +1619,7 @@ index 0000000..367c880
 +#include <sys/wait.h>
 +#include <unistd.h>
 +#include <fstream>
++#include <sstream>
 +#include <vector>
 +#include <utils/StrongPointer.h>
 +
@@ -1869,48 +1870,14 @@ index 0000000..367c880
 +    return true;
 +}
 +
-+bool DiscoverInstalledSystemIdentity(std::string* release, std::string* patch) {
-+    std::string slot_suffix = ReadProperty("ro.boot.slot_suffix");
-+    if (slot_suffix.empty()) {
-+        const std::string slot = ReadProperty("ro.boot.slot");
-+        if (slot == "a" || slot == "b") slot_suffix = "_" + slot;
-+    }
-+    if (slot_suffix != "_a" && slot_suffix != "_b") {
-+        LOGERR("[H40 PORTIDENTITY] unable to determine active system slot: suffix=%s\n",
-+               slot_suffix.c_str());
-+        return false;
-+    }
++struct IdentityCandidate {
++    const char* relative_path;
++    std::vector<std::string> release_keys;
++    std::vector<std::string> patch_keys;
++};
 +
-+    const std::string block = "/dev/block/bootdevice/by-name/system" + slot_suffix;
-+    constexpr char kMountPoint[] = "/tmp/h40-installed-system";
-+    if (mkdir(kMountPoint, 0700) != 0 && errno != EEXIST) {
-+        LOGERR("[H40 PORTIDENTITY] mkdir failed: %s\n", strerror(errno));
-+        return false;
-+    }
-+
-+    constexpr unsigned long kReadOnlyFlags = MS_RDONLY | MS_NOSUID | MS_NODEV | MS_NOEXEC;
-+    const char* mounted_type = nullptr;
-+    if (mount(block.c_str(), kMountPoint, "ext4", kReadOnlyFlags, "") == 0) {
-+        mounted_type = "ext4";
-+    } else if (mount(block.c_str(), kMountPoint, "erofs", kReadOnlyFlags, "") == 0) {
-+        mounted_type = "erofs";
-+    }
-+    if (!mounted_type) {
-+        LOGERR("[H40 PORTIDENTITY] read-only system mount failed for slot %s: %s\n",
-+               slot_suffix.c_str(), strerror(errno));
-+        rmdir(kMountPoint);
-+        return false;
-+    }
-+
-+    LOGINFO("[H40 PORTIDENTITY] installed system mounted read-only: slot=%s fs=%s\n",
-+            slot_suffix.c_str(), mounted_type);
-+
-+    struct Candidate {
-+        const char* relative_path;
-+        std::vector<std::string> release_keys;
-+        std::vector<std::string> patch_keys;
-+    };
-+    const std::vector<Candidate> candidates = {
++const std::vector<IdentityCandidate>& IdentityCandidates() {
++    static const std::vector<IdentityCandidate> candidates = {
 +        {"/system/build.prop",
 +         {"ro.system.build.version.release", "ro.build.version.release"},
 +         {"ro.system.build.version.security_patch", "ro.build.version.security_patch"}},
@@ -1933,20 +1900,132 @@ index 0000000..367c880
 +         {"ro.system_ext.build.version.release", "ro.build.version.release"},
 +         {"ro.system_ext.build.version.security_patch", "ro.build.version.security_patch"}},
 +    };
++    return candidates;
++}
 +
-+    bool found = false;
-+    for (const auto& candidate : candidates) {
-+        const std::string path = std::string(kMountPoint) + candidate.relative_path;
++bool ReadIdentityFromRoot(const std::string& root, std::string* release, std::string* patch) {
++    for (const auto& candidate : IdentityCandidates()) {
++        const std::string path = root + candidate.relative_path;
 +        std::string candidate_release;
 +        std::string candidate_patch;
 +        if (ReadIdentityPair(path, candidate.release_keys, candidate.patch_keys,
 +                             &candidate_release, &candidate_patch)) {
 +            *release = candidate_release;
 +            *patch = candidate_patch;
-+            found = true;
-+            break;
++            return true;
 +        }
 +    }
++    return false;
++}
++
++bool HasMountOption(const std::string& options, const char* option) {
++    const std::string padded = "," + options + ",";
++    return padded.find(std::string(",") + option + ",") != std::string::npos;
++}
++
++struct MountedSystem {
++    std::string source;
++    std::string mount_point;
++    std::string fs_type;
++};
++
++bool FindMountedDynamicSystem(MountedSystem* mounted) {
++    std::ifstream mounts("/proc/mounts");
++    if (!mounts.is_open()) return false;
++
++    MountedSystem system_root;
++    std::string line;
++    while (std::getline(mounts, line)) {
++        std::istringstream fields(line);
++        MountedSystem candidate;
++        std::string options;
++        if (!(fields >> candidate.source >> candidate.mount_point >> candidate.fs_type >> options)) {
++            continue;
++        }
++        if (candidate.mount_point != "/system" && candidate.mount_point != "/system_root") {
++            continue;
++        }
++        if (candidate.fs_type != "ext4" && candidate.fs_type != "erofs") continue;
++        if (!HasMountOption(options, "ro")) continue;
++        if (candidate.source.find("/dev/block/dm-") != 0 &&
++            candidate.source.find("/dev/block/mapper/") != 0 &&
++            candidate.source.find("/dev/block/bootdevice/by-name/system") != 0) {
++            continue;
++        }
++        if (candidate.mount_point == "/system") {
++            *mounted = candidate;
++            return true;
++        }
++        system_root = candidate;
++    }
++    if (!system_root.mount_point.empty()) {
++        *mounted = system_root;
++        return true;
++    }
++    return false;
++}
++
++bool DiscoverInstalledSystemIdentity(std::string* release, std::string* patch) {
++    std::string slot_suffix = ReadProperty("ro.boot.slot_suffix");
++    if (slot_suffix.empty()) {
++        const std::string slot = ReadProperty("ro.boot.slot");
++        if (slot == "a" || slot == "b") slot_suffix = "_" + slot;
++    }
++    if (slot_suffix != "_a" && slot_suffix != "_b") {
++        LOGERR("[H40 PORTIDENTITY] unable to determine active system slot: suffix=%s\n",
++               slot_suffix.c_str());
++        return false;
++    }
++
++    MountedSystem existing;
++    if (FindMountedDynamicSystem(&existing)) {
++        LOGINFO("[H40 PORTIDENTITY] using mounted dynamic system: source=%s mount=%s fs=%s\n",
++                existing.source.c_str(), existing.mount_point.c_str(), existing.fs_type.c_str());
++        if (ReadIdentityFromRoot(existing.mount_point, release, patch)) return true;
++        LOGERR("[H40 PORTIDENTITY] mounted dynamic system has no reliable release/SPL pair\n");
++    }
++
++    const std::vector<std::string> blocks = {
++        "/dev/block/mapper/system" + slot_suffix,
++        "/dev/block/mapper/system",
++        "/dev/block/bootdevice/by-name/system",
++        "/dev/block/bootdevice/by-name/system" + slot_suffix,
++    };
++    constexpr char kMountPoint[] = "/tmp/h40-installed-system";
++    if (mkdir(kMountPoint, 0700) != 0 && errno != EEXIST) {
++        LOGERR("[H40 PORTIDENTITY] mkdir failed: %s\n", strerror(errno));
++        return false;
++    }
++
++    constexpr unsigned long kReadOnlyFlags = MS_RDONLY | MS_NOSUID | MS_NODEV | MS_NOEXEC;
++    std::string mounted_block;
++    const char* mounted_type = nullptr;
++    int last_error = ENOENT;
++    for (const auto& block : blocks) {
++        if (mount(block.c_str(), kMountPoint, "ext4", kReadOnlyFlags, "") == 0) {
++            mounted_block = block;
++            mounted_type = "ext4";
++            break;
++        }
++        last_error = errno;
++        if (mount(block.c_str(), kMountPoint, "erofs", kReadOnlyFlags, "") == 0) {
++            mounted_block = block;
++            mounted_type = "erofs";
++            break;
++        }
++        last_error = errno;
++    }
++    if (!mounted_type) {
++        LOGERR("[H40 PORTIDENTITY] read-only system mount failed for slot %s: %s\n",
++               slot_suffix.c_str(), strerror(last_error));
++        rmdir(kMountPoint);
++        return false;
++    }
++
++    LOGINFO("[H40 PORTIDENTITY] installed system mounted read-only: slot=%s block=%s fs=%s\n",
++            slot_suffix.c_str(), mounted_block.c_str(), mounted_type);
++
++    const bool found = ReadIdentityFromRoot(kMountPoint, release, patch);
 +
 +    if (umount(kMountPoint) != 0) {
 +        LOGERR("[H40 PORTIDENTITY] failed to unmount installed system: %s\n", strerror(errno));
@@ -2693,7 +2772,7 @@ index 0000000..367c880
 +}  // namespace twrp
 diff --git a/oplus_h40_decrypt.hpp b/oplus_h40_decrypt.hpp
 new file mode 100644
-index 0000000..46cfabc
+index 0000000000000000000000000000000000000000..46cfabc3227606a89c5c33d7813730f6149a5672
 --- /dev/null
 +++ b/oplus_h40_decrypt.hpp
 @@ -0,0 +1,37 @@
@@ -2735,7 +2814,7 @@ index 0000000..46cfabc
 +}  // namespace oplus_h40
 +}  // namespace twrp
 diff --git a/partitionmanager.cpp b/partitionmanager.cpp
-index 2766b4c..8be659a 100755
+index 2766b4c07ad77d364069af7afcd18d537fab238d..8be659a121515363ddeedcab10da9db9c7a4064d 100755
 --- a/partitionmanager.cpp
 +++ b/partitionmanager.cpp
 @@ -111,6 +111,43 @@ extern "C" {
