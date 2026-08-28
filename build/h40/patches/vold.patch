@@ -1,5 +1,5 @@
 diff --git a/Android.bp b/Android.bp
-index 376157b..553d3f6 100644
+index 376157b4880cf35bb715433a1c88507a91d23f6a..553d3f6c26420908eebd82576bef9fb4e068b94a 100644
 --- a/Android.bp
 +++ b/Android.bp
 @@ -176,6 +176,7 @@ cc_library_static {
@@ -19,7 +19,7 @@ index 376157b..553d3f6 100644
          "libkeystoreinfo",
          "libkeystore-attestation-application-id",
 diff --git a/Checkpoint.cpp b/Checkpoint.cpp
-index 755f0e3..8e5aea7 100644
+index 755f0e3b3401350a61a764364cf6af7b3126f701..8e5aea7bd6a7e9d3a5df0d80b2a064a967040b01 100644
 --- a/Checkpoint.cpp
 +++ b/Checkpoint.cpp
 @@ -87,7 +87,7 @@ bool setBowState(std::string const& block_device, std::string const& state) {
@@ -68,7 +68,7 @@ index 755f0e3..8e5aea7 100644
  
          if (fstab_rec->fs_mgr_flags.checkpoint_blk) {
 diff --git a/Decrypt.cpp b/Decrypt.cpp
-index d9f034b..d0a9d11 100755
+index d9f034b538454354a65682dd58ed02f4badd7d5b..d0a9d112186fae9b166e50fdb14be50228b0a605 100755
 --- a/Decrypt.cpp
 +++ b/Decrypt.cpp
 @@ -126,13 +126,13 @@ extern "C" bool lookup_ref_key(fscrypt_policy* fep, uint8_t* policy_type) {
@@ -242,7 +242,7 @@ index d9f034b..d0a9d11 100755
  	struct stat st;
  	char spblob_path_char[PATH_MAX];
 diff --git a/Decrypt.h b/Decrypt.h
-index ff926dc..c807b6b 100755
+index ff926dcd6c92d0f8697ec8bd9c61e151bb05d952..c807b6be935ab7b7b0bc293d9f9be6fd5c156279 100755
 --- a/Decrypt.h
 +++ b/Decrypt.h
 @@ -38,6 +38,7 @@ namespace keystore {
@@ -254,7 +254,7 @@ index ff926dc..c807b6b 100755
  }
  __END_DECLS
 diff --git a/FsCrypt.cpp b/FsCrypt.cpp
-index 7505e56..69cc8d3 100644
+index 7505e560451c24f50bf1d1615e37b1b9a1c3acf9..4ebfe10f3f0507e3a24476755dba94bbd3d35976 100644
 --- a/FsCrypt.cpp
 +++ b/FsCrypt.cpp
 @@ -70,7 +70,7 @@ using android::fs_mgr::GetEntryForMountPoint;
@@ -293,30 +293,30 @@ index 7505e56..69cc8d3 100644
 +    static auto* value = new std::string(std::string() + DATA_MNT_POINT + "/misc/vold/user_keys");
 +    return *value;
 +}
-+
+ 
+-const std::string user_key_dir = std::string() + DATA_MNT_POINT + "/misc/vold/user_keys";
+-const std::string user_key_temp = user_key_dir + "/temp";
+-const std::string prepare_subdirs_path = "/system/bin/vold_prepare_subdirs";
 +const std::string& GetUserKeyTemp() {
 +    static auto* value = new std::string(GetUserKeyDir() + "/temp");
 +    return *value;
 +}
  
--const std::string user_key_dir = std::string() + DATA_MNT_POINT + "/misc/vold/user_keys";
--const std::string user_key_temp = user_key_dir + "/temp";
--const std::string prepare_subdirs_path = "/system/bin/vold_prepare_subdirs";
+-const std::string systemwide_volume_key_dir =
+-    std::string() + DATA_MNT_POINT + "/misc/vold/volume_keys";
 +const std::string& GetPrepareSubdirsPath() {
 +    static auto* value = new std::string("/system/bin/vold_prepare_subdirs");
 +    return *value;
 +}
  
--const std::string systemwide_volume_key_dir =
--    std::string() + DATA_MNT_POINT + "/misc/vold/volume_keys";
+-// Some users are ephemeral, don't try to wipe their keys from disk
+-std::set<userid_t> s_ephemeral_users;
 +const std::string& GetSystemwideVolumeKeyDir() {
 +    static auto* value =
 +            new std::string(std::string() + DATA_MNT_POINT + "/misc/vold/volume_keys");
 +    return *value;
 +}
- 
--// Some users are ephemeral, don't try to wipe their keys from disk
--std::set<userid_t> s_ephemeral_users;
++
 +std::set<userid_t>& GetEphemeralUsers() {
 +    static auto* users = new std::set<userid_t>();
 +    return *users;
@@ -580,7 +580,7 @@ index 7505e56..69cc8d3 100644
      } else {
          for (auto const path : get_ce_key_paths(get_ce_key_directory_path(user_id))) {
              success &= android::vold::destroyKey(path);
-@@ -661,18 +703,198 @@ static std::optional<android::vold::KeyAuthentication> authentication_from_hex(
+@@ -661,18 +703,265 @@ static std::optional<android::vold::KeyAuthentication> authentication_from_hex(
      std::string secret;
      if (!parse_hex(secret_hex, &secret)) return std::optional<android::vold::KeyAuthentication>();
      if (secret.empty()) {
@@ -612,9 +612,8 @@ index 7505e56..69cc8d3 100644
 +    return true;
 +}
 +
-+static bool h40_directory_has_exact_entries(int directory_fd,
-+                                             const std::set<std::string>& expected,
-+                                             const char* label) {
++static bool h40_read_directory_entries(int directory_fd, const char* label,
++                                       std::set<std::string>* entries) {
 +    const int scan_fd = TEMP_FAILURE_RETRY(
 +            fcntl(directory_fd, F_DUPFD_CLOEXEC, 0));
 +    if (scan_fd < 0) {
@@ -628,13 +627,13 @@ index 7505e56..69cc8d3 100644
 +        return false;
 +    }
 +
-+    std::set<std::string> seen;
++    entries->clear();
 +    errno = 0;
 +    while (dirent* entry = readdir(directory.get())) {
 +        const std::string name(entry->d_name);
 +        if (name == "." || name == "..") continue;
-+        if (expected.count(name) == 0 || !seen.insert(name).second) {
-+            LOG(ERROR) << "[H40 V51 CURRENT] unexpected entry " << label << "/" << name;
++        if (!entries->insert(name).second) {
++            LOG(ERROR) << "[H40 V51 CURRENT] duplicate entry " << label << "/" << name;
 +            return false;
 +        }
 +        errno = 0;
@@ -643,8 +642,16 @@ index 7505e56..69cc8d3 100644
 +        PLOG(ERROR) << "[H40 V51 CURRENT] failed while enumerating " << label;
 +        return false;
 +    }
-+    if (seen != expected) {
-+        LOG(ERROR) << "[H40 V51 CURRENT] missing required entry in " << label;
++    return true;
++}
++
++static bool h40_directory_has_exact_entries(int directory_fd,
++                                             const std::set<std::string>& expected,
++                                             const char* label) {
++    std::set<std::string> entries;
++    if (!h40_read_directory_entries(directory_fd, label, &entries)) return false;
++    if (entries != expected) {
++        LOG(ERROR) << "[H40 V51 CURRENT] unsupported entry set in " << label;
 +        return false;
 +    }
 +    return true;
@@ -652,7 +659,8 @@ index 7505e56..69cc8d3 100644
 +
 +static bool h40_validate_regular_file_at(int directory_fd, const char* name,
 +                                         off_t expected_size,
-+                                         const char* expected_contents) {
++                                         const char* expected_contents,
++                                         bool reject_all_zero = false) {
 +    android::base::unique_fd fd(TEMP_FAILURE_RETRY(
 +            openat(directory_fd, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)));
 +    if (fd < 0) {
@@ -688,15 +696,38 @@ index 7505e56..69cc8d3 100644
 +        LOG(ERROR) << "[H40 V51 CURRENT] invalid contents in " << name;
 +        return false;
 +    }
++    if (reject_all_zero &&
++        std::all_of(contents.begin(), contents.end(), [](char value) { return value == '\0'; })) {
++        LOG(ERROR) << "[H40 V51 CURRENT] all-zero contents in " << name;
++        return false;
++    }
 +    return true;
 +}
 +
-+static bool validate_h40_modern_user0_ce_layout() {
++enum class OplusCurrentCeLayout {
++    kInvalid,
++    kDirectAesMinimal,
++    kDirectAesLegacyNone,
++};
++
++static const char* h40_current_ce_layout_name(OplusCurrentCeLayout layout) {
++    switch (layout) {
++        case OplusCurrentCeLayout::kDirectAesMinimal:
++            return "direct-aes-minimal";
++        case OplusCurrentCeLayout::kDirectAesLegacyNone:
++            return "direct-aes-legacy-none";
++        case OplusCurrentCeLayout::kInvalid:
++            return "invalid";
++    }
++    return "invalid";
++}
++
++static OplusCurrentCeLayout validate_h40_modern_user0_ce_layout() {
 +    android::base::unique_fd root(TEMP_FAILURE_RETRY(
 +            open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)));
 +    if (root < 0) {
 +        PLOG(ERROR) << "[H40 V51 CURRENT] cannot open filesystem root";
-+        return false;
++        return OplusCurrentCeLayout::kInvalid;
 +    }
 +
 +    android::base::unique_fd data, misc, vold, user_keys, ce, user0, current;
@@ -706,21 +737,50 @@ index 7505e56..69cc8d3 100644
 +        !h40_open_directory_at(vold.get(), "user_keys", &user_keys) ||
 +        !h40_open_directory_at(user_keys.get(), "ce", &ce) ||
 +        !h40_open_directory_at(ce.get(), "0", &user0)) {
-+        return false;
++        return OplusCurrentCeLayout::kInvalid;
 +    }
 +    if (!h40_directory_has_exact_entries(user0.get(), {"current"},
 +                                         "/data/misc/vold/user_keys/ce/0")) {
-+        return false;
++        return OplusCurrentCeLayout::kInvalid;
 +    }
-+    if (!h40_open_directory_at(user0.get(), "current", &current) ||
-+        !h40_directory_has_exact_entries(current.get(), {"encrypted_key", "version"},
-+                                         "/data/misc/vold/user_keys/ce/0/current")) {
-+        return false;
++    if (!h40_open_directory_at(user0.get(), "current", &current)) {
++        return OplusCurrentCeLayout::kInvalid;
 +    }
-+    if (!h40_validate_regular_file_at(current.get(), "version", 1, "1")) return false;
++    std::set<std::string> entries;
++    if (!h40_read_directory_entries(current.get(),
++                                    "/data/misc/vold/user_keys/ce/0/current", &entries)) {
++        return OplusCurrentCeLayout::kInvalid;
++    }
++    const std::set<std::string> minimal = {"encrypted_key", "version"};
++    const std::set<std::string> legacy_none = {
++            "encrypted_key", "secdiscardable", "stretching", "version"};
++    OplusCurrentCeLayout layout = OplusCurrentCeLayout::kInvalid;
++    if (entries == minimal) {
++        layout = OplusCurrentCeLayout::kDirectAesMinimal;
++    } else if (entries == legacy_none) {
++        layout = OplusCurrentCeLayout::kDirectAesLegacyNone;
++    } else {
++        LOG(ERROR) << "[OPLUS V56 LAYOUT] unsupported user 0 CE key-directory schema";
++        return OplusCurrentCeLayout::kInvalid;
++    }
++
++    if (!h40_validate_regular_file_at(current.get(), "version", 1, "1")) {
++        return OplusCurrentCeLayout::kInvalid;
++    }
 +    // 12-byte GCM nonce + 64-byte fscrypt key + 16-byte GCM tag.
-+    if (!h40_validate_regular_file_at(current.get(), "encrypted_key", 92, nullptr)) return false;
-+    return true;
++    if (!h40_validate_regular_file_at(current.get(), "encrypted_key", 92, nullptr)) {
++        return OplusCurrentCeLayout::kInvalid;
++    }
++    if (layout == OplusCurrentCeLayout::kDirectAesLegacyNone) {
++        // Some upgraded ROMs retain Android 11's literal "none" marker and
++        // 16 KiB secdiscardable.  Both remain part of the direct-AES app ID.
++        if (!h40_validate_regular_file_at(current.get(), "stretching", 4, "none") ||
++            !h40_validate_regular_file_at(current.get(), "secdiscardable", 1 << 14,
++                                           nullptr, true)) {
++            return OplusCurrentCeLayout::kInvalid;
++        }
++    }
++    return layout;
 +}
 +
 +bool fscrypt_unlock_user0_key_current_only(const std::string& secret_hex) {
@@ -734,7 +794,8 @@ index 7505e56..69cc8d3 100644
 +        LOG(ERROR) << "[H40 V51 CURRENT] user 0 CE policy already exists";
 +        return false;
 +    }
-+    if (!validate_h40_modern_user0_ce_layout()) return false;
++    const OplusCurrentCeLayout layout = validate_h40_modern_user0_ce_layout();
++    if (layout == OplusCurrentCeLayout::kInvalid) return false;
 +
 +    auto auth = authentication_from_hex(secret_hex);
 +    if (!auth || auth->secret.empty()) {
@@ -747,10 +808,16 @@ index 7505e56..69cc8d3 100644
 +        return false;
 +    }
 +
-+    // Re-run the no-follow shape guard immediately before retrieveKey().  With
-+    // nonempty authentication and no Keymaster/secdiscardable files, the exact
-+    // accepted layout can take only KeyStorage's read-only direct AES-GCM path.
-+    if (!validate_h40_modern_user0_ce_layout()) return false;
++    // Re-run the no-follow shape guard immediately before retrieveKey().  A
++    // nonempty authentication forces KeyStorage's read-only direct AES-GCM
++    // path.  Keymaster blobs remain forbidden by both accepted entry sets.
++    const OplusCurrentCeLayout revalidated_layout =
++            validate_h40_modern_user0_ce_layout();
++    if (revalidated_layout != layout) {
++        LOG(ERROR) << "[OPLUS V56 LAYOUT] user 0 CE schema changed during validation";
++        return false;
++    }
++    LOG(INFO) << "[OPLUS V56 LAYOUT] validated " << h40_current_ce_layout_name(layout);
 +    const std::string key_path =
 +            get_ce_key_current_path(get_ce_key_directory_path(kUser));
 +    KeyBuffer ce_key;
@@ -781,7 +848,7 @@ index 7505e56..69cc8d3 100644
  }
  
  static bool read_or_create_volkey(const std::string& misc_path, const std::string& volume_uuid,
-@@ -709,7 +931,7 @@ static bool destroy_volkey(const std::string& misc_path, const std::string& volu
+@@ -709,7 +998,7 @@ static bool destroy_volkey(const std::string& misc_path, const std::string& volu
  static bool fscrypt_rewrap_user_key(userid_t user_id, int serial,
                                      const android::vold::KeyAuthentication& retrieve_auth,
                                      const android::vold::KeyAuthentication& store_auth) {
@@ -790,7 +857,7 @@ index 7505e56..69cc8d3 100644
      auto const directory_path = get_ce_key_directory_path(user_id);
      KeyBuffer ce_key;
      std::string ce_key_current_path = get_ce_key_current_path(directory_path);
-@@ -718,7 +940,7 @@ static bool fscrypt_rewrap_user_key(userid_t user_id, int serial,
+@@ -718,7 +1007,7 @@ static bool fscrypt_rewrap_user_key(userid_t user_id, int serial,
          // TODO(147732812): Remove this once Locksettingservice is fixed.
          // Currently it calls fscrypt_clear_user_key_auth with a secret when lockscreen is
          // changed from swipe to none or vice-versa
@@ -799,7 +866,7 @@ index 7505e56..69cc8d3 100644
          LOG(INFO) << "Successfully retrieved key with empty auth";
      } else {
          LOG(ERROR) << "Failed to retrieve key for user " << user_id;
-@@ -727,7 +949,7 @@ static bool fscrypt_rewrap_user_key(userid_t user_id, int serial,
+@@ -727,7 +1016,7 @@ static bool fscrypt_rewrap_user_key(userid_t user_id, int serial,
      auto const paths = get_ce_key_paths(directory_path);
      std::string ce_key_path;
      if (!get_ce_key_new_path(directory_path, paths, &ce_key_path)) return false;
@@ -808,7 +875,7 @@ index 7505e56..69cc8d3 100644
          return false;
      return true;
  }
-@@ -737,7 +959,7 @@ bool fscrypt_add_user_key_auth(userid_t user_id, int serial, const std::string&
+@@ -737,7 +1026,7 @@ bool fscrypt_add_user_key_auth(userid_t user_id, int serial, const std::string&
      if (!fscrypt_is_native()) return true;
      auto auth = authentication_from_hex(secret_hex);
      if (!auth) return false;
@@ -817,7 +884,7 @@ index 7505e56..69cc8d3 100644
  }
  
  bool fscrypt_clear_user_key_auth(userid_t user_id, int serial, const std::string& secret_hex) {
-@@ -745,13 +967,13 @@ bool fscrypt_clear_user_key_auth(userid_t user_id, int serial, const std::string
+@@ -745,13 +1034,13 @@ bool fscrypt_clear_user_key_auth(userid_t user_id, int serial, const std::string
      if (!fscrypt_is_native()) return true;
      auto auth = authentication_from_hex(secret_hex);
      if (!auth) return false;
@@ -833,7 +900,7 @@ index 7505e56..69cc8d3 100644
      auto const directory_path = get_ce_key_directory_path(user_id);
      auto const paths = get_ce_key_paths(directory_path);
      if (paths.empty()) {
-@@ -764,7 +986,7 @@ bool fscrypt_fixate_newest_user_key_auth(userid_t user_id) {
+@@ -764,7 +1053,7 @@ bool fscrypt_fixate_newest_user_key_auth(userid_t user_id) {
  
  std::vector<int> fscrypt_get_unlocked_users() {
      std::vector<int> user_ids;
@@ -842,7 +909,7 @@ index 7505e56..69cc8d3 100644
          user_ids.push_back(it.first);
      }
      return user_ids;
-@@ -774,7 +996,7 @@ std::vector<int> fscrypt_get_unlocked_users() {
+@@ -774,7 +1063,7 @@ std::vector<int> fscrypt_get_unlocked_users() {
  bool fscrypt_unlock_user_key(userid_t user_id, int serial, const std::string& secret_hex) {
      LOG(INFO) << "fscrypt_unlock_user_key " << user_id << " serial=" << serial;
      if (fscrypt_is_native()) {
@@ -851,7 +918,7 @@ index 7505e56..69cc8d3 100644
              LOG(WARNING) << "Tried to unlock already-unlocked key for user " << user_id;
              return true;
          }
-@@ -821,7 +1043,7 @@ bool fscrypt_lock_user_key(userid_t user_id) {
+@@ -821,7 +1110,7 @@ bool fscrypt_lock_user_key(userid_t user_id) {
  static bool prepare_subdirs(const std::string& action, const std::string& volume_uuid,
                              userid_t user_id, int flags) {
      if (0 != android::vold::ForkExecvp(
@@ -860,7 +927,7 @@ index 7505e56..69cc8d3 100644
                                            std::to_string(user_id), std::to_string(flags)})) {
          LOG(ERROR) << "vold_prepare_subdirs failed";
          return false;
-@@ -864,7 +1086,7 @@ bool fscrypt_prepare_user_storage(const std::string& volume_uuid, userid_t user_
+@@ -864,7 +1153,7 @@ bool fscrypt_prepare_user_storage(const std::string& volume_uuid, userid_t user_
          if (fscrypt_is_native()) {
              EncryptionPolicy de_policy;
              if (volume_uuid.empty()) {
@@ -869,7 +936,7 @@ index 7505e56..69cc8d3 100644
                  if (!EnsurePolicy(de_policy, system_de_path)) return false;
                  if (!EnsurePolicy(de_policy, misc_de_path)) return false;
                  if (!EnsurePolicy(de_policy, vendor_de_path)) return false;
-@@ -902,7 +1124,7 @@ bool fscrypt_prepare_user_storage(const std::string& volume_uuid, userid_t user_
+@@ -902,7 +1191,7 @@ bool fscrypt_prepare_user_storage(const std::string& volume_uuid, userid_t user_
          if (fscrypt_is_native()) {
              EncryptionPolicy ce_policy;
              if (volume_uuid.empty()) {
@@ -879,7 +946,7 @@ index 7505e56..69cc8d3 100644
                  if (!EnsurePolicy(ce_policy, misc_ce_path)) return false;
                  if (!EnsurePolicy(ce_policy, vendor_ce_path)) return false;
 diff --git a/FsCrypt.h b/FsCrypt.h
-index 14a115a..ba8a16c 100644
+index 14a115a74334afc598b4a3c7e2f763df62aaac6c..ba8a16c0fee8b62e853215ee87b84dbbe32fa13f 100644
 --- a/FsCrypt.h
 +++ b/FsCrypt.h
 @@ -32,6 +32,9 @@ bool fscrypt_fixate_newest_user_key_auth(userid_t user_id);
@@ -893,7 +960,7 @@ index 14a115a..ba8a16c 100644
  
  bool fscrypt_prepare_user_storage(const std::string& volume_uuid, userid_t user_id, int serial,
 diff --git a/IdleMaint.cpp b/IdleMaint.cpp
-index 8005cf4..ff78a35 100644
+index 8005cf4b65ced2188b3005a7e488295a5a25b8b5..ff78a35293ee7dd53085cdda378a906aa2757a22 100644
 --- a/IdleMaint.cpp
 +++ b/IdleMaint.cpp
 @@ -113,7 +113,7 @@ static void addFromVolumeManager(std::list<std::string>* paths, PathTypes path_t
@@ -915,7 +982,7 @@ index 8005cf4..ff78a35 100644
              path = entry.sysfs_path;
              break;
 diff --git a/KeyStorage.cpp b/KeyStorage.cpp
-index 51fc4f6..6f27e51 100644
+index 51fc4f62967c7ad6f5081cd00c94df3861b97646..f538f8930b5f998e033d8c383158e92834b3d890 100644
 --- a/KeyStorage.cpp
 +++ b/KeyStorage.cpp
 @@ -53,7 +53,10 @@ extern "C" {
@@ -1050,9 +1117,9 @@ index 51fc4f6..6f27e51 100644
          // DeleteUpgradedKey(keymaster, upgraded_blob_file);
      if (!readFileToString(blob_file, &blob)) return KeymasterOperation();
      // }
-+    LOG(ERROR) << "[H40 KMCOMPAT] begin: calling Keymaster begin for metadata blob";
++    LOG(INFO) << "[H40 KMCOMPAT] begin: calling Keymaster begin for metadata blob";
      auto opHandle = keymaster.begin(blob, inParams, outParams);
-+    LOG(ERROR) << "[H40 KMCOMPAT] begin: returned valid=" << static_cast<bool>(opHandle)
++    LOG(INFO) << "[H40 KMCOMPAT] begin: returned valid=" << static_cast<bool>(opHandle)
 +               << " error=" << static_cast<int32_t>(opHandle.getErrorCode());
      if (!opHandle) return opHandle;
  
@@ -1066,9 +1133,9 @@ index 51fc4f6..6f27e51 100644
                                   const std::string& secdiscardable_hash) {
      std::string appId = secdiscardable_hash + auth.secret;
  
-+    LOG(ERROR) << "[H40 KMCOMPAT] appId: acquiring storage-binding state";
++    LOG(INFO) << "[H40 KMCOMPAT] appId: acquiring storage-binding state";
 +    auto& storage_binding_info = GetStorageBindingInfo();
-+    LOG(ERROR) << "[H40 KMCOMPAT] appId: storage-binding state ready, state="
++    LOG(INFO) << "[H40 KMCOMPAT] appId: storage-binding state ready, state="
 +               << static_cast<int32_t>(storage_binding_info.state);
      const std::lock_guard<std::mutex> scope_lock(storage_binding_info.guard);
      switch (storage_binding_info.state) {
@@ -1077,7 +1144,7 @@ index 51fc4f6..6f27e51 100644
              // noop
              break;
      }
-+    LOG(ERROR) << "[H40 KMCOMPAT] appId: complete";
++    LOG(INFO) << "[H40 KMCOMPAT] appId: complete";
      return appId;
  }
  
@@ -1085,16 +1152,16 @@ index 51fc4f6..6f27e51 100644
      std::string encryptedMessage;
      if (!readFileToString(dir + "/" + kFn_encrypted_key, &encryptedMessage)) return false;
      if (auth.usesKeymaster()) {
-+        LOG(ERROR) << "[H40 KMCOMPAT] retrieve: constructing Keymaster";
++        LOG(INFO) << "[H40 KMCOMPAT] retrieve: constructing Keymaster";
          Keymaster keymaster;
-+        LOG(ERROR) << "[H40 KMCOMPAT] retrieve: constructor returned valid="
++        LOG(INFO) << "[H40 KMCOMPAT] retrieve: constructor returned valid="
 +                   << static_cast<bool>(keymaster);
          if (!keymaster) return false;
          km::AuthorizationSet keyParams = beginParams(appId);
-+        LOG(ERROR) << "[H40 KMCOMPAT] retrieve: starting metadata-key decrypt";
++        LOG(INFO) << "[H40 KMCOMPAT] retrieve: starting metadata-key decrypt";
          if (!decryptWithKeymasterKey(keymaster, dir, keyParams, encryptedMessage, key))
              return false;
-+        LOG(ERROR) << "[H40 KMCOMPAT] retrieve: metadata-key decrypt complete";
++        LOG(INFO) << "[H40 KMCOMPAT] retrieve: metadata-key decrypt complete";
      } else {
          if (!decryptWithoutKeymaster(appId, encryptedMessage, key)) return false;
      }
@@ -1107,7 +1174,7 @@ index 51fc4f6..6f27e51 100644
      switch (storage_binding_info.state) {
          case StorageBindingInfo::State::UNINITIALIZED:
 diff --git a/KeyStorage.h b/KeyStorage.h
-index e379c0c..f83efd3 100644
+index e379c0c44bbbdb999e86cfe7512e8e710e55eed9..f83efd37931731fce62f5cb3295333dfac8f2b95 100644
 --- a/KeyStorage.h
 +++ b/KeyStorage.h
 @@ -36,7 +36,7 @@ class KeyAuthentication {
@@ -1120,7 +1187,7 @@ index e379c0c..f83efd3 100644
  bool createSecdiscardable(const std::string& path, std::string* hash);
  bool readSecdiscardable(const std::string& path, std::string* hash);
 diff --git a/Keymaster.cpp b/Keymaster.cpp
-index 4781d91..18fc096 100644
+index 4781d9114792e98d566a153bd279ea52501b9c1d..4402588ee5bc1dcee744f68a999ce1b1ceaedb49 100644
 --- a/Keymaster.cpp
 +++ b/Keymaster.cpp
 @@ -14,232 +14,851 @@
@@ -1498,9 +1565,9 @@ index 4781d91..18fc096 100644
  Keymaster::Keymaster() {
 -    ::ndk::SpAIBinder binder(AServiceManager_waitForService(keystore2_service_name));
 -    auto keystore2Service = ks2::IKeystoreService::fromBinder(binder);
-+    LOG(ERROR) << "[H40 KMCOMPAT] constructor: enumerating Keymaster 4.x devices";
++    LOG(INFO) << "[H40 KMCOMPAT] constructor: enumerating Keymaster 4.x devices";
 +    auto devices = KmDevice::enumerateAvailableDevices();
-+    LOG(ERROR) << "[H40 KMCOMPAT] constructor: enumerated " << devices.size() << " device(s)";
++    LOG(INFO) << "[H40 KMCOMPAT] constructor: enumerated " << devices.size() << " device(s)";
 +    if (devices.empty()) {
 +        LOG(ERROR) << "[H40 KMCOMPAT] constructor: no Keymaster devices";
 +        return;
@@ -1509,10 +1576,10 @@ index 4781d91..18fc096 100644
 -    if (!keystore2Service) {
 -        LOG(ERROR) << "Vold unable to connect to keystore2.";
 +    if (!hmacKeyGenerated) {
-+        LOG(ERROR) << "[H40 KMCOMPAT] constructor: starting standard HMAC agreement";
++        LOG(INFO) << "[H40 KMCOMPAT] constructor: starting standard HMAC agreement";
 +        KmDevice::performHmacKeyAgreement(devices);
 +        hmacKeyGenerated = true;
-+        LOG(ERROR) << "[H40 KMCOMPAT] constructor: HMAC agreement complete";
++        LOG(INFO) << "[H40 KMCOMPAT] constructor: HMAC agreement complete";
 +    }
 +
 +    for (auto& dev : devices) {
@@ -1541,7 +1608,7 @@ index 4781d91..18fc096 100644
 -        LOG(ERROR) << "Vold unable to get security level from keystore2.";
 +    const auto& version = mDevice->halVersion();
 +    mSecurityLevel = version.securityLevel;
-+    LOG(ERROR) << "[H40 KMCOMPAT] constructor: selected " << version.keymasterName
++    LOG(INFO) << "[H40 KMCOMPAT] constructor: selected " << version.keymasterName
 +               << " from " << version.authorName
 +               << ", security=" << static_cast<int32_t>(version.securityLevel)
 +               << ", HAL=" << mDevice->descriptor() << "/" << mDevice->instanceName();
@@ -1687,7 +1754,7 @@ index 4781d91..18fc096 100644
 +    }
 +
 +    auto oldBlobView = UnwrapKs2KeyBlob(oldKey);
-+    LOG(ERROR) << "[H40 BLOBPREFIX] upgrade: storedLen=" << oldKey.size()
++    LOG(INFO) << "[H40 BLOBPREFIX] upgrade: storedLen=" << oldKey.size()
 +               << " prefixPresent=" << oldBlobView.prefixPresent
 +               << " softKeyMint=" << oldBlobView.softKeyMint
 +               << " hidlLen=" << oldBlobView.raw.size();
@@ -1733,7 +1800,7 @@ index 4781d91..18fc096 100644
 +            std::string rawUpgraded(
 +                    reinterpret_cast<const char*>(&upgradedKeyBlob[0]), upgradedKeyBlob.size());
 +            *newKey = WrapKs2HardwareKeyBlob(rawUpgraded);
-+            LOG(ERROR) << "[H40 BLOBPREFIX] upgrade: rawUpgradedLen=" << rawUpgraded.size()
++            LOG(INFO) << "[H40 BLOBPREFIX] upgrade: rawUpgradedLen=" << rawUpgraded.size()
 +                       << " returnedStoredLen=" << newKey->size();
 +        }
      };
@@ -1831,7 +1898,7 @@ index 4781d91..18fc096 100644
 +    LOG(DEBUG) << "[Keymaster] begin: Purpose = " << static_cast<int32_t>(purpose);
 +
 +    auto blobView = UnwrapKs2KeyBlob(key);
-+    LOG(ERROR) << "[H40 BLOBPREFIX] begin: storedLen=" << key.size()
++    LOG(INFO) << "[H40 BLOBPREFIX] begin: storedLen=" << key.size()
 +               << " prefixPresent=" << blobView.prefixPresent
 +               << " softKeyMint=" << blobView.softKeyMint
 +               << " hidlLen=" << blobView.raw.size();
@@ -1870,7 +1937,7 @@ index 4781d91..18fc096 100644
 +        beginHidlParams.push_back(param);
 +    }
 +
-+    LOG(ERROR) << "[H40 BLOBPROBE] begin bridge: purpose="
++    LOG(INFO) << "[H40 BLOBPROBE] begin bridge: purpose="
 +               << static_cast<int32_t>(purpose)
 +               << " storedBlobLen=" << key.size()
 +               << " hidlBlobLen=" << blobView.raw.size()
@@ -1897,7 +1964,7 @@ index 4781d91..18fc096 100644
 +                    characteristicsSwCount = chars.softwareEnforced.size();
 +                }
 +            });
-+    LOG(ERROR) << "[H40 BLOBPROBE] characteristics: transportOk="
++    LOG(INFO) << "[H40 BLOBPROBE] characteristics: transportOk="
 +               << characteristicsTransport.isOk()
 +               << " error=" << static_cast<int32_t>(characteristicsError)
 +               << " hwParams=" << characteristicsHwCount
@@ -2006,7 +2073,7 @@ index 4781d91..18fc096 100644
 +           static_cast<int32_t>(purpose), key.size(), inParams.size());
 +
 +    auto blobView = UnwrapKs2KeyBlob(key);
-+    LOG(ERROR) << "[H40 BLOBPREFIX] auth begin: storedLen=" << key.size()
++    LOG(INFO) << "[H40 BLOBPREFIX] auth begin: storedLen=" << key.size()
 +               << " prefixPresent=" << blobView.prefixPresent
 +               << " softKeyMint=" << blobView.softKeyMint
 +               << " hidlLen=" << blobView.raw.size();
@@ -2028,7 +2095,7 @@ index 4781d91..18fc096 100644
 +        }
 +        beginHidlParams.push_back(param);
      }
-+    LOG(ERROR) << "[H40 BLOBPROBE] auth begin bridge: purpose="
++    LOG(INFO) << "[H40 BLOBPROBE] auth begin bridge: purpose="
 +               << static_cast<int32_t>(purpose)
 +               << " storedBlobLen=" << key.size()
 +               << " hidlBlobLen=" << blobView.raw.size()
@@ -2126,7 +2193,7 @@ index 4781d91..18fc096 100644
  
  }  // namespace vold
 diff --git a/Keymaster.h b/Keymaster.h
-index 47bf4a2..51d5372 100644
+index 47bf4a26c6b45a8f65d7b2eaed41de3ce6a9f6d2..51d53721992d5e006e53c2401583ba012bfe2852 100644
 --- a/Keymaster.h
 +++ b/Keymaster.h
 @@ -13,7 +13,11 @@
@@ -2365,7 +2432,7 @@ index 47bf4a2..51d5372 100644
  };
  
 diff --git a/MetadataCrypt.cpp b/MetadataCrypt.cpp
-index dd6d880..2311ca9 100644
+index dd6d8803e4a876965d244f73105b3c94d047f31b..2311ca91d788293a9fcec46fc4d8015f7174d219 100644
 --- a/MetadataCrypt.cpp
 +++ b/MetadataCrypt.cpp
 @@ -60,7 +60,10 @@ struct CryptoOptions {
@@ -2450,7 +2517,7 @@ index dd6d880..2311ca9 100644
              LOG(ERROR) << "DSU metadata_key_dir is same as host OS: " << dsu_metadata_key_dir;
              return false;
 diff --git a/Utils.cpp b/Utils.cpp
-index a33a16e..6fb7ec4 100644
+index a33a16ee8f72b15acd9b8b4516fd157168840c96..6fb7ec403cc84fcee75b8e359f0b57c6b598fb63 100644
 --- a/Utils.cpp
 +++ b/Utils.cpp
 @@ -92,14 +92,17 @@ struct selabel_handle* sehandle;
@@ -2483,7 +2550,7 @@ index a33a16e..6fb7ec4 100644
  
      char* secontext = nullptr;
 diff --git a/VoldUtil.cpp b/VoldUtil.cpp
-index 082f743..be3be65 100644
+index 082f7434e5d67b2fcb2dce19e7e8700013dbd284..be3be6518c561fcdf448c9ca53060948198abbbb 100644
 --- a/VoldUtil.cpp
 +++ b/VoldUtil.cpp
 @@ -16,4 +16,7 @@
@@ -2496,7 +2563,7 @@ index 082f743..be3be65 100644
 +    return *fstab;
 +}
 diff --git a/VoldUtil.h b/VoldUtil.h
-index 8c06236..43a5c5e 100644
+index 8c062362dfd0bd97a8bf0da5189782051706abd1..43a5c5e24f407e8237f87d67392f14ca9ba31b7a 100644
 --- a/VoldUtil.h
 +++ b/VoldUtil.h
 @@ -18,7 +18,7 @@
@@ -2509,7 +2576,7 @@ index 8c06236..43a5c5e 100644
  #define DATA_MNT_POINT "/data"
  #define METADATA_MNT_POINT "/metadata"
 diff --git a/cryptfs.cpp b/cryptfs.cpp
-index 623d628..2fb058e 100644
+index 623d628f02ddf68c6f594856b4698154c9b33c07..2fb058e394587503bae3a487b56d9d2a94c93a14 100644
 --- a/cryptfs.cpp
 +++ b/cryptfs.cpp
 @@ -756,7 +756,7 @@ static uint64_t get_fs_size(const char* dev) {
@@ -2562,7 +2629,7 @@ index 623d628..2fb058e 100644
  }
  
 diff --git a/fscrypt-common.h b/fscrypt-common.h
-index cab7b3a..c0789c4 100755
+index cab7b3a8af1591588505014d1fb8456927d06d16..c0789c49751ee51e75a1e5d200feae5c521ce401 100755
 --- a/fscrypt-common.h
 +++ b/fscrypt-common.h
 @@ -3,7 +3,7 @@
@@ -2578,7 +2645,7 @@ index cab7b3a..c0789c4 100755
 +std::map<userid_t, android::fscrypt::EncryptionPolicy>& GetCePolicies();
 +std::string& GetDeKeyRawRef();
 diff --git a/main.cpp b/main.cpp
-index 1f85fb5..34cad89 100644
+index 1f85fb53c7c103ceeea683e26cc51ff5a0f2ce41..34cad897edf3e99d27dc8cf7af2eb65ccf16b802 100644
 --- a/main.cpp
 +++ b/main.cpp
 @@ -220,7 +220,7 @@ static void coldboot(const char* path) {

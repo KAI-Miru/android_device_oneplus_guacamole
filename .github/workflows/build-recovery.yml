@@ -140,7 +140,7 @@ jobs:
             cd "$patch_dir"
             sha256sum --check <<'EOF'
           c196b8bd497039ae9ec7587212d47e0fe105867982b4ee06a02bbe30507b464e  recovery.patch
-          bf99fa1bcd3c9c73fd94d0a554898df9711332b2dea87e8566a01f6f740be394  vold.patch
+          034b64defe6e7ff10b91e8948e0f2ac19da3a7f434bb03e9e6351fba283f2cda  vold.patch
           0cd8269b20fa83fcfff42eee02a6a0be8a0d8a74bb2ee9baba8449dc26441523  security.patch
           bc1398b4901403a33d7ad80a171ba95974ba2c938558bc10b69ff350e8850895  binder.patch
           EOF
@@ -171,6 +171,9 @@ jobs:
           grep -Fq '[H40 PORTIDENTITY] using mounted dynamic system' \
             bootable/recovery/oplus_h40_decrypt.cpp
           grep -Fq 'Decrypt_User_H40_Modern' system/vold/Decrypt.cpp
+          grep -Fq 'direct-aes-minimal' system/vold/FsCrypt.cpp
+          grep -Fq 'direct-aes-legacy-none' system/vold/FsCrypt.cpp
+          grep -Fq '[OPLUS V56 LAYOUT]' system/vold/FsCrypt.cpp
           grep -Fq 'GetKeyUpgradeLock()' system/vold/KeyStorage.cpp
           grep -Fq 'GetKeyDirsToCommit()' system/vold/KeyStorage.cpp
           grep -Fq 'malformed pKMblob prefix' system/vold/Keymaster.cpp

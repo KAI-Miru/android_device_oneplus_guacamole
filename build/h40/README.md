@@ -17,7 +17,7 @@ Patch SHA-256 values:
 
 ```text
 c196b8bd497039ae9ec7587212d47e0fe105867982b4ee06a02bbe30507b464e  recovery.patch
-bf99fa1bcd3c9c73fd94d0a554898df9711332b2dea87e8566a01f6f740be394  vold.patch
+034b64defe6e7ff10b91e8948e0f2ac19da3a7f434bb03e9e6351fba283f2cda  vold.patch
 0cd8269b20fa83fcfff42eee02a6a0be8a0d8a74bb2ee9baba8449dc26441523  security.patch
 bc1398b4901403a33d7ad80a171ba95974ba2c938558bc10b69ff350e8850895  binder.patch
 ```
@@ -34,9 +34,10 @@ layout. All four patches apply cleanly with
 - `recovery.patch` adds the H.40 adapter, isolated credential helper, user-0
   dispatch, parent-process modern decryption handoff, and universal installed
   system identity discovery for static and dynamic partition layouts.
-- `vold.patch` implements HIDL Keymaster compatibility, constructor-safe state,
-  fail-closed `pKMblob` handling, explicit fscrypt key mode, and the guarded CE
-  key installation path.
+- `vold.patch` is shared byte-for-byte with Hotdog. It implements HIDL
+  Keymaster compatibility, constructor-safe state, fail-closed `pKMblob`
+  handling, explicit fscrypt key mode, and a guarded CE installer that
+  recognizes both proven Oplus direct-AES layouts at runtime.
 - `security.patch` grants only the recovery-domain Keystore2 operations needed
   for locksettings namespace 103.
 - `binder.patch` bridges SDK30 raw stability values on kernel Binder while
@@ -53,6 +54,10 @@ layout. All four patches apply cleanly with
 - Decryption support is owner-only: Android user 0 is supported and physically
   validated. Secondary users, work profiles, System Cloner data, and other
   non-owner credential domains are intentionally unsupported.
+- The current-only CE installer accepts exactly two read-only schemas:
+  `encrypted_key` plus `version`, or those files plus a literal `none`
+  stretching marker and a nonzero 16 KiB `secdiscardable`. Unknown, mixed,
+  linked, malformed, or changing schemas fail closed without mutation.
 - `qseecomd` remains disabled by default and is started only by the accepted
   credential flow. Its proprietary binary hard-codes the listener table, so
   the matching stock `libspl.so` and `libops.so` plugins are retained instead
