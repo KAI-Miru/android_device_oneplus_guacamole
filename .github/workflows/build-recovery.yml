@@ -331,6 +331,26 @@ jobs:
           install -D -m 0644 "$device/recovery/root/twres/splash.xml" "$recovery_root/twres/splash.xml"
           install -D -m 0644 "$device/recovery/root/twres/images/mirumiru.png" \
             "$recovery_root/twres/images/mirumiru.png"
+
+          # bash_twrp/nano_twrp install their configuration into the recovery
+          # tree, but Android keeps the compiled executables and libncurses in
+          # the product system tree.  Stage the complete feature entry points
+          # before mkbootfs so the private-runtime closure can audit and carry
+          # them.  zip follows the same product-only install pattern.
+          install -D -m 0755 "$product_root/system/system_ext/bin/bash" \
+            "$recovery_root/system/bin/bash"
+          install -D -m 0755 "$product_root/system/system_ext/bin/nano" \
+            "$recovery_root/system/bin/nano"
+          install -D -m 0755 "$product_root/system/xbin/zip" \
+            "$recovery_root/system/bin/zip"
+          install -D -m 0644 "$product_root/system/system_ext/lib64/libncurses.so" \
+            "$recovery_root/system/lib64/libncurses.so"
+          test -L "$recovery_root/sbin/bash"
+          test -f "$recovery_root/system/etc/bash/bashrc"
+          test -f "$recovery_root/system/etc/init/nano.rc"
+          test -f "$recovery_root/system/etc/nano/nanorc"
+          test -d "$recovery_root/system/etc/terminfo"
+
           test -x out/host/linux-x86/bin/mkbootfs
           out/host/linux-x86/bin/mkbootfs "$recovery_root" > "$stage/twrp.cpio"
 
