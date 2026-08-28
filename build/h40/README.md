@@ -54,7 +54,9 @@ layout. All six patches apply cleanly in their documented order with
   tables, suppresses unavailable stock services, then installs the MTP,
   cgroup, timezone, haptics, and QSEE payloads required by the hybrid ramdisk.
 - `stock-first/build_full_boot.sh` starts from the checked H.40 ramdisk, builds
-  the exact private TWRP dependency closure, applies the tested RC2 fixes and
+  the exact private TWRP dependency closure and complete Bash/Nano/ZIP feature
+  bundles, restores generated `/file_contexts`, shell configuration, `/bin`,
+  and the fixed `mke2fs` configuration path, applies the tested RC2 fixes and
   Keystore2 runtime, restores the H.40 boot-v2 framing, and verifies the final
   AVB-padded `boot.img` independently.
 - `prebuilt/h40/manifest.json` pins every stock component and deliberate binary
@@ -79,7 +81,8 @@ layout. All six patches apply cleanly in their documented order with
 - The recovery-fix transformer removes the premature health-service start and
   legacy cpuacct/cpuset commands. It also makes `gatekeeperd` explicit-start
   only and disables unavailable `vndservicemanager`, `irsc_util`, and recovery
-  Wi-Fi services.
+  Wi-Fi services. The stock Phoenix recovery start and service are removed
+  because their executable is not present in the ramdisk.
 - `aw8697_rtp.bin` is the 72,000-byte Guacamole vendor firmware blob (SHA-256
   `36438cefa7206dac9ef150b613418d5912c3eb69ed4e0084798602985b43470d`).
 - `80ms_RTP_170Hz.bin` is the 1,979-byte OnePlus AW8697 170 Hz firmware blob

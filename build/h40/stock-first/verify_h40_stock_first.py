@@ -12,7 +12,14 @@ from pathlib import Path
 
 import newc
 from make_private_twrp_overlay import PRIVATE_INTERPRETER, patch_exact_cstring, patch_pt_interp
-from make_stock_patch_overlay import LEGACY_INSTALLER_SHELL, LEGACY_INSTALLER_SHELL_TARGET
+from make_stock_patch_overlay import (
+    LEGACY_INSTALLER_SHELL,
+    LEGACY_INSTALLER_SHELL_TARGET,
+    MKE2FS_CONFIG_SOURCE,
+    MKE2FS_CONFIG_TARGET,
+    ROOT_BIN_LINK,
+    ROOT_BIN_LINK_TARGET,
+)
 from repack_boot_v2 import AVB_FOOTER_MAGIC, parse_boot_v2
 
 
@@ -46,6 +53,13 @@ def require(condition: bool, message: str) -> None:
         raise SystemExit(message)
 
 
+def require_symlink(index: dict[str, newc.Entry], name: str, target: bytes, label: str) -> None:
+    entry = index.get(name)
+    require(entry is not None, f"missing {label}: /{name}")
+    require(entry.mode & 0o170000 == 0o120000, f"{label} is not a symlink: /{name}")
+    require(entry.data == target, f"{label} has the wrong target: /{name}")
+
+
 def verify_record(path: Path, record: dict, label: str) -> bytes:
     data = path.read_bytes()
     require(len(data) == record["bytes"], f"{label} size mismatch")
@@ -64,6 +78,7 @@ def main() -> None:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--recovery-root", type=Path, required=True)
     parser.add_argument("--stock-patch-report", type=Path, required=True)
+    parser.add_argument("--private-manifest", type=Path, required=True)
     parser.add_argument("--fix-report", type=Path, required=True)
     parser.add_argument("--runtime-report", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
@@ -108,6 +123,7 @@ def main() -> None:
     require(len(final_entries) == len(final_index), "final CPIO contains duplicate paths")
 
     stock_patch = json.loads(args.stock_patch_report.read_text(encoding="utf-8"))
+    private_manifest = json.loads(args.private_manifest.read_text(encoding="utf-8"))
     fix_report = json.loads(args.fix_report.read_text(encoding="utf-8"))
     runtime_report = json.loads(args.runtime_report.read_text(encoding="utf-8"))
     allowed_changes = {
@@ -164,6 +180,62 @@ def main() -> None:
         and installer_shell_records[0].get("target_sha256") == sha256(installer_shell.data),
         "legacy ZIP installer shell route is not audited in the stock overlay manifest",
     )
+    require_symlink(final_index, ROOT_BIN_LINK, ROOT_BIN_LINK_TARGET, "root /bin compatibility link")
+    require(MKE2FS_CONFIG_SOURCE in final_index, "system mke2fs configuration is absent")
+    require(MKE2FS_CONFIG_TARGET in final_index, "root mke2fs configuration is absent")
+    require(
+        final_index[MKE2FS_CONFIG_TARGET].data == final_index[MKE2FS_CONFIG_SOURCE].data,
+        "root mke2fs configuration differs from /system/etc/mke2fs.conf",
+    )
+    stock_patch_records = {record["target"]: record for record in stock_patch["records"]}
+    require(
+        stock_patch_records.get(ROOT_BIN_LINK, {}).get("purpose") == "root_bin_compatibility",
+        "root /bin compatibility link is not audited in the stock patch report",
+    )
+    require(
+        stock_patch_records.get(MKE2FS_CONFIG_TARGET, {}).get("purpose") == "mke2fs_fixed_path_config",
+        "root mke2fs configuration is not audited in the stock patch report",
+    )
+
+    private_records = {record["target"]: record for record in private_manifest["records"]}
+    required_private_paths = {
+        "file_contexts",
+        "system/etc/mkshrc",
+        "system/tw/bin/bash",
+        "system/tw/bin/nano",
+        "system/tw/bin/zip",
+        "system/bin/bash",
+        "system/bin/nano",
+        "system/bin/zip",
+        "sbin/bash",
+        "system/etc/bash/bashrc",
+        "system/etc/init/nano.rc",
+        "system/etc/nano/nanorc",
+        "system/etc/terminfo/x/xterm-256color",
+        "etc/bash",
+        "etc/nano",
+        "etc/terminfo",
+    }
+    for target in required_private_paths:
+        require(target in private_records, f"critical private path is unmanifested: /{target}")
+        require(target in final_index, f"critical private path is absent from final ramdisk: /{target}")
+        record = private_records[target]
+        require(len(final_index[target].data) == record["bytes"], f"critical private path size changed: /{target}")
+        require(sha256(final_index[target].data) == record["target_sha256"], f"critical private path changed: /{target}")
+    require(bool(final_index["file_contexts"].data), "generated root /file_contexts is empty")
+    require(bool(final_index["system/etc/mkshrc"].data), "TWRP mkshrc is empty")
+    require_symlink(final_index, "sbin/bash", b"/system/bin/bash", "legacy Bash route")
+    require_symlink(final_index, "etc/bash", b"/system/etc/bash", "Bash configuration route")
+    require_symlink(final_index, "etc/nano", b"/system/etc/nano", "Nano configuration route")
+    require_symlink(final_index, "etc/terminfo", b"/system/etc/terminfo", "terminfo compatibility route")
+    require(
+        set(private_manifest.get("feature_bundles", {})) == {"bash", "nano"},
+        "Bash/Nano feature bundles are not both manifested",
+    )
+    require(
+        b"export TERMINFO /system/etc/terminfo" in final_index["system/etc/init/nano.rc"].data,
+        "Nano TERMINFO export is absent",
+    )
 
     raw_recovery = (args.recovery_root / "system/bin/recovery").read_bytes()
     relocated, _ = patch_pt_interp(raw_recovery, PRIVATE_INTERPRETER, expected_old="/system/bin/linker64")
@@ -195,6 +267,10 @@ def main() -> None:
     qcom_rc = final_index["init.recovery.qcom.rc"].data
     require(b"mtk-msdc.0" not in init_rc, "MediaTek e2fsck path survived")
     require(b"wait /dev/block/bootdevice/by-name/modem" not in init_rc, "obsolete modem wait survived")
+    require(
+        b"start phoenix_recovery" not in init_rc and b"service phoenix_recovery " not in init_rc,
+        "impossible stock Phoenix recovery service survived",
+    )
     require(init_rc.count(b"mkdir /config/usb_gadget/g1/functions/mtp.gs0") == 3, "MTP configfs setup is incomplete")
     require(init_rc.count(b"property:sys.usb.config=sideload") == 2, "sideload ownership rules changed")
     require(b"sys.usb.ffs.ready" not in qcom_rc, "Qualcomm init still competes for USB ownership")
@@ -228,6 +304,8 @@ def main() -> None:
             "stock_policy_exact": True,
             "private_recovery_exact_compiled": True,
             "legacy_zip_installer_shell_route_present": True,
+            "stock_first_path_contract_complete": True,
+            "bash_nano_zip_bundles_complete": True,
             "universal_owner_decryption_markers_present": True,
             "oem_verifier_isolated": True,
             "mount_table_rc2_exact": True,

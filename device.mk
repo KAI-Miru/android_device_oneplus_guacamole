@@ -79,8 +79,6 @@ TW_NO_SCREEN_BLANK := true
 TW_USE_LEDS_HAPTICS := true
 TW_HAS_EDL_MODE := true
 TW_EXCLUDE_PYTHON := true
-TW_EXCLUDE_NANO := true
-TW_EXCLUDE_BASH := true
 TW_FRAMERATE := 60
 
 #Properties

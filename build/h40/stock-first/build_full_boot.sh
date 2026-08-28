@@ -58,7 +58,8 @@ python3 "$script_dir/make_private_twrp_overlay.py" \
   --dlopen-root-manifest "$script_dir/h40-proprietary-manifest.json" \
   --elf-audit-dir "$script_dir" \
   --output "$work_dir/private-overlay.cpio" \
-  --manifest "$work_dir/private-overlay.json"
+  --manifest "$work_dir/private-overlay.json" \
+  --required-helper system/bin/magiskboot
 python3 "$script_dir/make_stock_patch_overlay.py" \
   --stock-tree "$work_dir/stock-tree" \
   --stock-cpio "$work_dir/stock.cpio" \
@@ -151,6 +152,7 @@ python3 "$script_dir/verify_h40_stock_first.py" \
   --manifest "$manifest" \
   --recovery-root "$recovery_root" \
   --stock-patch-report "$work_dir/stock-patch-overlay.json" \
+  --private-manifest "$work_dir/private-overlay.json" \
   --fix-report "$work_dir/recovery-fixes-cpio.json" \
   --runtime-report "$work_dir/runtime-cpio.json" \
   --report "$work_dir/verification.json"

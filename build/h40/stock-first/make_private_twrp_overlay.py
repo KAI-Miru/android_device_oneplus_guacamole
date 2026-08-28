@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Build a private-runtime TWRP overlay from a raw recovery ramdisk.
 
-Only the requested entry-point ELF files, a functional helper set, their exact
-recursive DT_NEEDED closure, the matching TWRP dynamic linker, and /twres are
-copied.  Executables are moved under /system/tw and their PT_INTERP program
-header is changed without performing an unsafe global byte-string replacement.
-Missing absolute /system/bin helper paths are supplied by tiny stock-shell
-wrappers which exec the private copy.
+The overlay contains the requested entry-point ELF files, a functional helper
+set, their exact recursive DT_NEEDED closure, the matching TWRP dynamic linker,
+/twres, and the non-ELF assets required by the selected features. Executables
+are moved under /system/tw and their PT_INTERP program header is changed without
+performing an unsafe global byte-string replacement. Missing absolute
+/system/bin helper paths are supplied by tiny stock-shell wrappers which exec
+the private copy.
 """
 
 from __future__ import annotations
@@ -31,13 +32,15 @@ PRIVATE_INTERPRETER = "/system/tw/linker64"
 # fastboot, ext4/f2fs image handling, backup compression, and ZIP extraction.
 DEFAULT_REQUIRED_HELPERS = (
     "system/bin/minadbd",
-    "system/bin/magiskboot",
     "system/bin/sload_f2fs",
     "system/bin/resize2fs",
     "system/bin/fastbootd",
     "system/bin/bu",
     "system/bin/pigz",
     "system/bin/unzip",
+    "system/bin/bash",
+    "system/bin/nano",
+    "system/bin/zip",
 )
 
 # Optional filesystem/ROM helpers are included when the selected build ships
@@ -54,6 +57,7 @@ DEFAULT_OPTIONAL_HELPERS = (
     "system/bin/fsck.fat",
     "system/bin/fsck.ntfs",
     "system/bin/fscryptpolicyget",
+    "system/bin/magiskboot",
     "system/bin/mkexfatfs",
     "system/bin/mkfs.fat",
     "system/bin/mkfs.ntfs",
@@ -66,10 +70,42 @@ DEFAULT_OPTIONAL_HELPERS = (
     "system/bin/zipinfo",
 )
 
-DEFAULT_ORIGINAL_ASSETS = (
+DEFAULT_REQUIRED_ORIGINAL_ASSETS = (
+    "file_contexts",
+    "system/etc/mkshrc",
+)
+
+DEFAULT_OPTIONAL_ORIGINAL_ASSETS = (
     "system/bin/me.twrp.twrpapp.apk",
     "system/bin/privapp-permissions-twrpapp.xml",
 )
+
+# Non-ELF files are part of the corresponding compiled feature.  Preserve the
+# complete trees, not just one convenient sentinel, whenever the helper is
+# selected for the private runtime.
+FEATURE_ORIGINAL_ASSET_ROOTS = {
+    "bash": (
+        "sbin/bash",
+        "system/etc/bash",
+    ),
+    "nano": (
+        "system/etc/init/nano.rc",
+        "system/etc/nano",
+        "system/etc/terminfo",
+    ),
+}
+
+# Stock recovery has a real /etc directory, whereas compiled TWRP normally has
+# /etc -> /system/etc.  Recreate the feature-specific path contract narrowly.
+FEATURE_COMPATIBILITY_LINKS = {
+    "bash": (
+        ("etc/bash", b"/system/etc/bash"),
+    ),
+    "nano": (
+        ("etc/nano", b"/system/etc/nano"),
+        ("etc/terminfo", b"/system/etc/terminfo"),
+    ),
+}
 
 
 def sha256(blob: bytes) -> str:
@@ -430,6 +466,79 @@ def collect_helper_sources(
     return requested, included, roles
 
 
+def merge_unique_paths(defaults: tuple[str, ...], additions: list[str]) -> list[str]:
+    result = []
+    seen = set()
+    for raw_relative in (*defaults, *additions):
+        relative = newc.normalize_name(raw_relative)
+        if relative not in seen:
+            seen.add(relative)
+            result.append(relative)
+    return result
+
+
+def collect_original_assets(
+    source_entries: dict[str, newc.Entry],
+    requested_helpers: list[str],
+    requested_assets: list[str],
+) -> tuple[list[str], dict[str, dict]]:
+    assets = []
+    seen = set()
+
+    def add(relative: str, required: bool) -> bool:
+        relative = newc.normalize_name(relative)
+        if relative not in source_entries:
+            if required:
+                raise SystemExit(f"required TWRP original-path asset is absent from cpio: {relative}")
+            return False
+        if relative not in seen:
+            seen.add(relative)
+            assets.append(relative)
+        return True
+
+    for relative in DEFAULT_REQUIRED_ORIGINAL_ASSETS:
+        add(relative, True)
+    for relative in DEFAULT_OPTIONAL_ORIGINAL_ASSETS:
+        add(relative, False)
+    for relative in requested_assets:
+        add(relative, True)
+
+    selected_helpers = {PurePosixPath(relative).name for relative in requested_helpers}
+    feature_bundles = {}
+    for feature, roots in FEATURE_ORIGINAL_ASSET_ROOTS.items():
+        if feature not in selected_helpers:
+            continue
+        feature_assets = []
+        for raw_root in roots:
+            root = newc.normalize_name(raw_root)
+            matches = sorted(
+                (
+                    relative
+                    for relative in source_entries
+                    if relative == root or relative.startswith(root + "/")
+                ),
+                key=lambda relative: (relative.count("/"), relative),
+            )
+            if not matches:
+                raise SystemExit(
+                    f"required {feature} companion asset root is absent from cpio: {root}"
+                )
+            for relative in matches:
+                add(relative, True)
+                feature_assets.append(relative)
+        links = [
+            {"target": target, "symlink_target": data.decode("ascii")}
+            for target, data in FEATURE_COMPATIBILITY_LINKS.get(feature, ())
+        ]
+        feature_bundles[feature] = {
+            "helper": f"system/bin/{feature}",
+            "asset_roots": list(roots),
+            "assets": feature_assets,
+            "compatibility_links": links,
+        }
+    return assets, feature_bundles
+
+
 def wrapper_for(private_basename: str) -> bytes:
     return (
         "#!/system/bin/sh\n"
@@ -463,15 +572,19 @@ def main() -> None:
         if relative not in source_entries:
             raise SystemExit(f"entry point is absent from TWRP cpio: {relative}")
 
-    required_helpers = args.required_helper or list(DEFAULT_REQUIRED_HELPERS)
-    optional_helpers = args.optional_helper or list(DEFAULT_OPTIONAL_HELPERS)
-    original_assets = list(DEFAULT_ORIGINAL_ASSETS) + [
-        item for item in args.original_asset if newc.normalize_name(item) not in DEFAULT_ORIGINAL_ASSETS
-    ]
+    # Command-line helpers extend the baseline contract.  Replacement semantics
+    # previously let the workflow silently discard new mandatory defaults.
+    required_helpers = merge_unique_paths(DEFAULT_REQUIRED_HELPERS, args.required_helper)
+    optional_helpers = merge_unique_paths(DEFAULT_OPTIONAL_HELPERS, args.optional_helper)
     requested_helpers, included_helpers, helper_roles = collect_helper_sources(
         source_entries,
         required_helpers,
         optional_helpers,
+    )
+    original_assets, feature_bundles = collect_original_assets(
+        source_entries,
+        requested_helpers,
+        args.original_asset,
     )
 
     private_sources = []
@@ -657,13 +770,8 @@ def main() -> None:
         wrapper_records.append(record)
 
     asset_records = []
-    for raw_relative in original_assets:
-        relative = newc.normalize_name(raw_relative)
-        source = source_entries.get(relative)
-        if source is None:
-            if relative in DEFAULT_ORIGINAL_ASSETS:
-                continue
-            raise SystemExit(f"requested TWRP original-path asset is absent from cpio: {relative}")
+    for relative in original_assets:
+        source = source_entries[relative]
         if relative in stock_entries:
             raise SystemExit(f"refusing to overwrite stock path with a TWRP asset: {relative}")
         copied = clone(source, relative, None, next_ino)
@@ -679,6 +787,29 @@ def main() -> None:
         }
         records.append(record)
         asset_records.append(record)
+
+    feature_link_records = []
+    for feature, bundle in feature_bundles.items():
+        for link in bundle["compatibility_links"]:
+            target = newc.normalize_name(link["target"])
+            if target in stock_entries or target in source_entries:
+                raise SystemExit(f"refusing to replace existing compatibility path: {target}")
+            data = link["symlink_target"].encode("ascii")
+            entry = newc.regular_file(target, data, mode=0o120777, ino=next_ino)
+            next_ino += 1
+            overlay.append(entry)
+            record = {
+                "kind": "feature_compatibility_link",
+                "feature": feature,
+                "source": None,
+                "target": target,
+                "target_sha256": sha256(data),
+                "bytes": len(data),
+                "entry_type": "symlink",
+                "symlink_target": link["symlink_target"],
+            }
+            records.append(record)
+            feature_link_records.append(record)
 
     target_library_names = set()
     target_library_sources = {}
@@ -862,6 +993,8 @@ def main() -> None:
         "private_executable_sources": private_sources,
         "helper_routes": wrapper_records,
         "original_assets_included": [record["target"] for record in asset_records],
+        "feature_bundles": feature_bundles,
+        "feature_compatibility_links": [record["target"] for record in feature_link_records],
         "library_count": sum(
             record["kind"] in {"library", "dlopen_root", "dlopen_dependency"}
             for record in records

@@ -29,6 +29,9 @@ MANDATORY_HELPERS = (
     "bu",
     "pigz",
     "unzip",
+    "bash",
+    "nano",
+    "zip",
 )
 
 
@@ -58,6 +61,13 @@ def load_elf_audit(directory: Path):
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise SystemExit(message)
+
+
+def require_symlink(entries: dict[str, newc.Entry], name: str, target: bytes, label: str) -> None:
+    entry = entries.get(name)
+    require(entry is not None, f"missing {label}: /{name}")
+    require(entry.mode & 0o170000 == 0o120000, f"{label} is not a symlink: /{name}")
+    require(entry.data == target, f"{label} has the wrong target: /{name}")
 
 
 def text_entry(entries: dict[str, newc.Entry], name: str) -> str:
@@ -665,6 +675,10 @@ def main() -> None:
     require(init_rc.count("service recovery /system/tw/bin/recovery") == 1, "private recovery service missing")
     require("service recovery /system/bin/recovery" not in init_rc, "stock recovery service still active")
     require(init_rc.count("service fastbootd /system/tw/bin/fastbootd") == 1, "private fastbootd service missing")
+    require(
+        "start phoenix_recovery" not in init_rc and "service phoenix_recovery " not in init_rc,
+        "impossible stock Phoenix recovery service remains",
+    )
     if h40_cryptoeng_manifest is not None:
         require("service common_dcs " not in init_rc, "a CommonDCS daemon was added to final init")
         require(
@@ -721,6 +735,24 @@ def main() -> None:
         "retrofit dynamic-partition property was injected into static-A/B prop.default",
     )
 
+    require_symlink(final, "sbin/sh", b"/system/bin/sh", "legacy ZIP installer shell route")
+    require_symlink(final, "bin", b"/system/bin", "root /bin compatibility link")
+    require("system/etc/mke2fs.conf" in final, "system mke2fs configuration is absent")
+    require("etc/mke2fs.conf" in final, "root mke2fs configuration is absent")
+    require(
+        final["etc/mke2fs.conf"].data == final["system/etc/mke2fs.conf"].data,
+        "root mke2fs configuration differs from /system/etc/mke2fs.conf",
+    )
+    patch_records = {record["target"]: record for record in patch_manifest["records"]}
+    require(
+        patch_records.get("bin", {}).get("purpose") == "root_bin_compatibility",
+        "root /bin compatibility link is not audited in the stock patch manifest",
+    )
+    require(
+        patch_records.get("etc/mke2fs.conf", {}).get("purpose") == "mke2fs_fixed_path_config",
+        "root mke2fs configuration is not audited in the stock patch manifest",
+    )
+
     routes = private_manifest["helper_routes"]
     by_source = {route["source"]: route for route in routes}
     for helper in MANDATORY_HELPERS:
@@ -741,8 +773,38 @@ def main() -> None:
         by_source["system/bin/minadbd"]["private_target"] == "system/tw/bin/minadbd",
         "ADB sideload does not route /system/bin/minadbd to the private runtime",
     )
+    required_original_assets = {
+        "file_contexts",
+        "system/etc/mkshrc",
+        "sbin/bash",
+        "system/etc/bash/bashrc",
+        "system/etc/init/nano.rc",
+        "system/etc/nano/nanorc",
+        "system/etc/terminfo/x/xterm-256color",
+    }
+    included_assets = set(private_manifest.get("original_assets_included", []))
+    require(
+        required_original_assets <= included_assets,
+        f"TWRP compatibility assets are incomplete: {sorted(required_original_assets - included_assets)}",
+    )
+    for asset in required_original_assets:
+        require(asset in final, f"required TWRP compatibility asset is absent: /{asset}")
+    require(bool(final["file_contexts"].data), "generated root /file_contexts is empty")
+    require(bool(final["system/etc/mkshrc"].data), "TWRP mkshrc is empty")
+    require_symlink(final, "sbin/bash", b"/system/bin/bash", "legacy Bash route")
+    require_symlink(final, "etc/bash", b"/system/etc/bash", "Bash configuration route")
+    require_symlink(final, "etc/nano", b"/system/etc/nano", "Nano configuration route")
+    require_symlink(final, "etc/terminfo", b"/system/etc/terminfo", "terminfo compatibility route")
+    require(
+        set(private_manifest.get("feature_bundles", {})) == {"bash", "nano"},
+        "Bash/Nano feature bundles are not both manifested",
+    )
+    require(
+        "export TERMINFO /system/etc/terminfo" in text_entry(final, "system/etc/init/nano.rc"),
+        "Nano TERMINFO export is absent",
+    )
     for asset in private_manifest.get("original_assets_included", []):
-        require(asset in final and asset not in stock, f"TWRP app integration asset is missing: /{asset}")
+        require(asset in final and asset not in stock, f"TWRP original-path asset is missing: /{asset}")
 
     recovery_record = next(
         (

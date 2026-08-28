@@ -35,6 +35,22 @@ PRIVATE_CONTEXTS = (
 
 LEGACY_INSTALLER_SHELL = "sbin/sh"
 LEGACY_INSTALLER_SHELL_TARGET = b"/system/bin/sh"
+ROOT_BIN_LINK = "bin"
+ROOT_BIN_LINK_TARGET = b"/system/bin"
+MKE2FS_CONFIG_SOURCE = "system/etc/mke2fs.conf"
+MKE2FS_CONFIG_TARGET = "etc/mke2fs.conf"
+
+PHOENIX_START_BLOCK = """    #ifdef OPLUS_FEATURE_PHOENIX_RECOVERY
+    start phoenix_recovery
+    #endif
+"""
+PHOENIX_SERVICE_BLOCK = """#ifdef OPLUS_FEATURE_PHOENIX_RECOVERY
+service phoenix_recovery /system/bin/phoenix_recovery
+    critical
+    seclabel u:r:recovery:s0
+#endif /* OPLUS_FEATURE_PHOENIX_RECOVERY */
+
+"""
 
 CURATED_TWRP_FLAGS = """# Stock-first H.40 hybrid for guacamole's physical, slotted A/B layout.
 /boot            emmc     /dev/block/bootdevice/by-name/boot       flags=slotselect
@@ -84,6 +100,13 @@ def decode_text(relative: str, blob: bytes) -> str:
         raise SystemExit(f"expected UTF-8 text in {relative}") from exc
 
 
+def replace_once(text: str, old: str, new: str, label: str) -> str:
+    count = text.count(old)
+    if count != 1:
+        raise SystemExit(f"{label}: expected one exact anchor, found {count}")
+    return text.replace(old, new, 1)
+
+
 def patch_init(text: str) -> str:
     source = re.compile(r"^service recovery /system/bin/recovery\s*$", re.MULTILINE)
     if len(source.findall(text)) != 1:
@@ -95,7 +118,9 @@ def patch_init(text: str) -> str:
     fastbootd = re.compile(r"^service fastbootd /system/bin/fastbootd\s*$", re.MULTILINE)
     if len(fastbootd.findall(text)) != 1:
         raise SystemExit("stock init.rc must contain exactly one unmodified fastbootd service")
-    return fastbootd.sub("service fastbootd /system/tw/bin/fastbootd", text)
+    text = fastbootd.sub("service fastbootd /system/tw/bin/fastbootd", text)
+    text = replace_once(text, PHOENIX_START_BLOCK, "", "impossible Phoenix recovery start")
+    return replace_once(text, PHOENIX_SERVICE_BLOCK, "", "impossible Phoenix recovery service")
 
 
 def patch_linker_config(text: str) -> str:
@@ -346,6 +371,54 @@ def main() -> None:
             "entry_type": "symlink",
             "symlink_target": LEGACY_INSTALLER_SHELL_TARGET.decode("ascii"),
             "purpose": "legacy_recovery_zip_installer",
+        }
+    )
+
+    system_bin = archive.get(ROOT_BIN_LINK_TARGET.lstrip(b"/").decode("ascii"))
+    if system_bin is None or system_bin.mode & 0o170000 != 0o040000:
+        raise SystemExit("Guacamole stock lacks the /system/bin directory")
+    if ROOT_BIN_LINK in archive:
+        raise SystemExit("Guacamole stock unexpectedly already contains /bin")
+    root_bin = newc.regular_file(
+        ROOT_BIN_LINK,
+        ROOT_BIN_LINK_TARGET,
+        mode=0o120777,
+        ino=next_ino,
+    )
+    next_ino += 1
+    overlay.append(root_bin)
+    records.append(
+        {
+            "kind": "addition",
+            "source": "stock:system/bin",
+            "target": ROOT_BIN_LINK,
+            "target_sha256": sha256(root_bin.data),
+            "target_bytes": len(root_bin.data),
+            "entry_type": "symlink",
+            "symlink_target": ROOT_BIN_LINK_TARGET.decode("ascii"),
+            "purpose": "root_bin_compatibility",
+        }
+    )
+
+    etc = archive.get("etc")
+    if etc is None or etc.mode & 0o170000 != 0o040000:
+        raise SystemExit("Guacamole stock lacks the root /etc directory")
+    mke2fs_source = archive.get(MKE2FS_CONFIG_SOURCE)
+    if mke2fs_source is None or mke2fs_source.mode & 0o170000 != 0o100000 or not mke2fs_source.data:
+        raise SystemExit("Guacamole stock lacks a valid /system/etc/mke2fs.conf")
+    if MKE2FS_CONFIG_TARGET in archive:
+        raise SystemExit("Guacamole stock unexpectedly already contains /etc/mke2fs.conf")
+    mke2fs_config = replace(mke2fs_source, name=MKE2FS_CONFIG_TARGET, ino=next_ino, nlink=1)
+    next_ino += 1
+    overlay.append(mke2fs_config)
+    records.append(
+        {
+            "kind": "addition",
+            "source": f"stock:{MKE2FS_CONFIG_SOURCE}",
+            "target": MKE2FS_CONFIG_TARGET,
+            "target_sha256": sha256(mke2fs_config.data),
+            "target_bytes": len(mke2fs_config.data),
+            "purpose": "mke2fs_fixed_path_config",
         }
     )
 
