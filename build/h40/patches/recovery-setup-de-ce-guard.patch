@@ -1,0 +1,318 @@
+diff --git a/oplus_h40_decrypt.cpp b/oplus_h40_decrypt.cpp
+index 15b4477..9f34711 100644
+--- a/oplus_h40_decrypt.cpp
++++ b/oplus_h40_decrypt.cpp
+@@ -10,7 +10,9 @@
+ #include <hidl/ServiceManagement.h>
+ #include <keyutils.h>
+ #include <linux/fscrypt.h>
++#include <openssl/sha.h>
+ #include <sys/ioctl.h>
++#include <sys/mman.h>
+ #include <sys/mount.h>
+ #include <sys/stat.h>
+ #include <sys/wait.h>
+@@ -20,9 +22,11 @@
+ #include <vector>
+ #include <utils/StrongPointer.h>
+ 
++#include <array>
+ #include <cerrno>
+ #include <climits>
+ #include <cstddef>
++#include <cstdint>
+ #include <cstring>
+ #include <dirent.h>
+ #include <mutex>
+@@ -30,6 +34,7 @@
+ 
+ #include "twcommon.h"
+ #include "oplus_h40_credential_client.hpp"
++#include "oplus_h40_credential_protocol.hpp"
+ 
+ namespace twrp {
+ namespace oplus_h40 {
+@@ -39,7 +44,6 @@ using android::hardware::defaultServiceManager;
+ using android::hidl::base::V1_0::IBase;
+ using android::hidl::manager::V1_0::IServiceManager;
+ 
+-constexpr char kLibrary[] = "libdecrypt_recovery.so";
+ constexpr char kSetupDeCeSymbol[] = "_Z11setup_de_cei";
+ constexpr char kGetPasswordTypeSymbol[] = "_Z17get_password_typei";
+ constexpr char kMountMetadataSymbol[] =
+@@ -72,6 +76,43 @@ using SetupDeCeFn = bool (*)(int);
+ using GetPasswordTypeFn = int (*)(int);
+ using MountMetadataFn = bool (*)(const std::string&);
+ 
++namespace credential_protocol = twrp::oplus_h40::credential_protocol;
++
++// Exact OOS 12 H.40 OEM library identity and the one passwordless-only branch
++// inside setup_de_ce(0). get_password_type(0) returns -1 when no lockscreen
++// credential exists; stock recovery then branches into a process-global CE
++// initializer that is unsafe when the library is dlopened by TWRP. The parent
++// recovery performs the real, guarded CE install after DE preparation instead.
++constexpr off_t kExpectedOemFileSize = 1479432;
++constexpr std::array<std::uint8_t, SHA256_DIGEST_LENGTH> kExpectedOemSha256 = {
++        0xd7, 0xff, 0x48, 0x88, 0xd8, 0x80, 0x40, 0x59,
++        0x6b, 0x7c, 0xa6, 0xc1, 0x1e, 0xe9, 0x89, 0x89,
++        0x3b, 0x6c, 0xef, 0x91, 0xba, 0x56, 0x51, 0x20,
++        0x29, 0x61, 0x71, 0x6f, 0x8e, 0x7d, 0xe2, 0xa2,
++};
++constexpr std::uintptr_t kSetupDeCeSymbolOffset = 0x822f0;
++constexpr std::uintptr_t kGetPasswordTypeSymbolOffset = 0x80ab8;
++constexpr std::uintptr_t kNoCredentialBranchOffset = 0x82438;
++constexpr std::uintptr_t kLegacyCeInitOffset = 0x82398;
++constexpr std::uintptr_t kGetPasswordTypePltOffset = 0x15c330;
++constexpr std::uintptr_t kLegacyCeInitPltOffset = 0x15c310;
++constexpr std::uint32_t kNoCredentialBranchInstruction = 0x54fffb00;
++constexpr std::uint32_t kAarch64Nop = 0xd503201f;
++
++struct OpcodeExpectation {
++    std::uintptr_t offset;
++    std::uint32_t original;
++};
++
++constexpr OpcodeExpectation kSetupDeCeOpcodeContext[] = {
++        {kLegacyCeInitOffset, 0x940367de},  // bl fscrypt_init_user0_ce@plt
++        {0x8242c, 0x2a1f03e0},             // mov w0, wzr
++        {0x82430, 0x940367c0},             // bl get_password_type@plt
++        {0x82434, 0x3100041f},             // cmn w0, #1
++        {kNoCredentialBranchOffset, kNoCredentialBranchInstruction},
++        {0x8243c, 0xd0fffda0},             // adrp x0, ...
++};
++
+ struct Api {
+     void* handle = nullptr;
+     SetupDeCeFn setup_de_ce = nullptr;
+@@ -649,8 +690,183 @@ bool PrepareCredentialServices() {
+     return WaitForAuthorizationEndpoint();
+ }
+ 
++void SecureWipe(void* data, std::size_t size) {
++    volatile std::uint8_t* bytes = static_cast<volatile std::uint8_t*>(data);
++    while (size != 0) {
++        *bytes++ = 0;
++        --size;
++    }
++}
++
++bool VerifyOemFileIdentity() {
++    struct stat path_status = {};
++    if (lstat(credential_protocol::kOemLibraryPath, &path_status) != 0 ||
++        !S_ISREG(path_status.st_mode) || path_status.st_size != kExpectedOemFileSize) {
++        return false;
++    }
++
++    const int fd = open(credential_protocol::kOemLibraryPath,
++                        O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
++    if (fd < 0) return false;
++    struct stat file_status = {};
++    if (fstat(fd, &file_status) != 0 || !S_ISREG(file_status.st_mode) ||
++        file_status.st_size != kExpectedOemFileSize ||
++        file_status.st_dev != path_status.st_dev ||
++        file_status.st_ino != path_status.st_ino) {
++        close(fd);
++        return false;
++    }
++
++    void* mapping = mmap(nullptr, static_cast<std::size_t>(file_status.st_size),
++                         PROT_READ, MAP_PRIVATE, fd, 0);
++    close(fd);
++    if (mapping == MAP_FAILED) return false;
++    std::array<std::uint8_t, SHA256_DIGEST_LENGTH> digest = {};
++    const unsigned char* hashed = SHA256(
++            static_cast<const unsigned char*>(mapping),
++            static_cast<std::size_t>(file_status.st_size), digest.data());
++    munmap(mapping, static_cast<std::size_t>(file_status.st_size));
++
++    unsigned int difference = hashed == nullptr ? 1U : 0U;
++    for (std::size_t index = 0; index < digest.size(); ++index) {
++        difference |= static_cast<unsigned int>(digest[index] ^ kExpectedOemSha256[index]);
++    }
++    SecureWipe(digest.data(), digest.size());
++    return difference == 0;
++}
++
++bool SymbolHasExpectedOrigin(void* symbol, void* expected_base,
++                             std::uintptr_t expected_offset) {
++    if (symbol == nullptr || expected_base == nullptr) return false;
++    Dl_info info = {};
++    if (dladdr(symbol, &info) == 0 || info.dli_fbase != expected_base ||
++        info.dli_fname == nullptr ||
++        strcmp(info.dli_fname, credential_protocol::kOemLibraryPath) != 0) {
++        return false;
++    }
++    const std::uintptr_t symbol_address = reinterpret_cast<std::uintptr_t>(symbol);
++    const std::uintptr_t base_address = reinterpret_cast<std::uintptr_t>(expected_base);
++    return symbol_address >= base_address &&
++           symbol_address - base_address == expected_offset;
++}
++
++bool SymbolComesFromOemLibrary(void* symbol, void* expected_base) {
++    if (symbol == nullptr || expected_base == nullptr) return false;
++    Dl_info info = {};
++    return dladdr(symbol, &info) != 0 && info.dli_fbase == expected_base &&
++           info.dli_fname != nullptr &&
++           strcmp(info.dli_fname, credential_protocol::kOemLibraryPath) == 0;
++}
++
++std::uintptr_t DecodePcRelativeTarget(std::uintptr_t instruction_offset,
++                                      std::uint32_t instruction,
++                                      unsigned int immediate_shift,
++                                      unsigned int immediate_bits) {
++    const std::uint64_t mask = (1ULL << immediate_bits) - 1ULL;
++    std::int64_t immediate =
++            static_cast<std::int64_t>((instruction >> immediate_shift) & mask);
++    const std::int64_t sign_bit = 1LL << (immediate_bits - 1);
++    if ((immediate & sign_bit) != 0) immediate -= 1LL << immediate_bits;
++    return static_cast<std::uintptr_t>(
++            static_cast<std::int64_t>(instruction_offset) + immediate * 4);
++}
++
++bool SetupDeCeOpcodeContextMatches(std::uintptr_t base, bool patched) {
++    for (const OpcodeExpectation& expectation : kSetupDeCeOpcodeContext) {
++        std::uint32_t expected = expectation.original;
++        if (patched && expectation.offset == kNoCredentialBranchOffset) {
++            expected = kAarch64Nop;
++        }
++        const std::uint32_t actual = *reinterpret_cast<const std::uint32_t*>(
++                base + expectation.offset);
++        if (actual != expected) return false;
++    }
++
++    const std::uint32_t get_password_type_call =
++            *reinterpret_cast<const std::uint32_t*>(base + 0x82430);
++    const std::uint32_t legacy_ce_init_call =
++            *reinterpret_cast<const std::uint32_t*>(base + kLegacyCeInitOffset);
++    if (DecodePcRelativeTarget(0x82430, get_password_type_call, 0, 26) !=
++                kGetPasswordTypePltOffset ||
++        DecodePcRelativeTarget(kLegacyCeInitOffset, legacy_ce_init_call, 0, 26) !=
++                kLegacyCeInitPltOffset) {
++        return false;
++    }
++    if (!patched) {
++        const std::uint32_t no_credential_branch =
++                *reinterpret_cast<const std::uint32_t*>(
++                        base + kNoCredentialBranchOffset);
++        if (DecodePcRelativeTarget(kNoCredentialBranchOffset,
++                                   no_credential_branch, 5, 19) !=
++            kLegacyCeInitOffset) {
++            return false;
++        }
++    }
++    return true;
++}
++
++bool InstallSetupDeCeNoCredentialGuard(void* raw_setup_de_ce,
++                                       void* raw_get_password_type,
++                                       void* raw_mount_metadata) {
++    if (!VerifyOemFileIdentity()) {
++        LOGERR("[OPLUS V59 SETUPGUARD] exact stock OEM library identity mismatch\n");
++        return false;
++    }
++
++    Dl_info library_info = {};
++    if (dladdr(raw_setup_de_ce, &library_info) == 0 ||
++        library_info.dli_fbase == nullptr ||
++        !SymbolHasExpectedOrigin(raw_setup_de_ce, library_info.dli_fbase,
++                                 kSetupDeCeSymbolOffset) ||
++        !SymbolHasExpectedOrigin(raw_get_password_type, library_info.dli_fbase,
++                                 kGetPasswordTypeSymbolOffset) ||
++        !SymbolComesFromOemLibrary(raw_mount_metadata, library_info.dli_fbase)) {
++        LOGERR("[OPLUS V59 SETUPGUARD] OEM symbol origin mismatch\n");
++        return false;
++    }
++
++    const std::uintptr_t base =
++            reinterpret_cast<std::uintptr_t>(library_info.dli_fbase);
++    if (!SetupDeCeOpcodeContextMatches(base, false)) {
++        LOGERR("[OPLUS V59 SETUPGUARD] setup_de_ce opcode context mismatch\n");
++        return false;
++    }
++
++    std::uint32_t* branch = reinterpret_cast<std::uint32_t*>(
++            base + kNoCredentialBranchOffset);
++    const long page_size = sysconf(_SC_PAGESIZE);
++    if (page_size <= 0 || (page_size & (page_size - 1)) != 0) return false;
++    const std::uintptr_t page_mask = static_cast<std::uintptr_t>(page_size - 1);
++    const std::uintptr_t start = reinterpret_cast<std::uintptr_t>(branch) & ~page_mask;
++    const std::uintptr_t end =
++            (reinterpret_cast<std::uintptr_t>(branch) + sizeof(*branch) + page_mask) &
++            ~page_mask;
++    if (end <= start || mprotect(reinterpret_cast<void*>(start), end - start,
++                                 PROT_READ | PROT_WRITE) != 0) {
++        LOGERR("[OPLUS V59 SETUPGUARD] cannot open exact OEM code page: %s\n",
++               strerror(errno));
++        return false;
++    }
++
++    *branch = kAarch64Nop;
++    __builtin___clear_cache(reinterpret_cast<char*>(start),
++                            reinterpret_cast<char*>(end));
++    if (mprotect(reinterpret_cast<void*>(start), end - start,
++                 PROT_READ | PROT_EXEC) != 0) {
++        LOGERR("[OPLUS V59 SETUPGUARD] cannot restore OEM code protections: %s\n",
++               strerror(errno));
++        return false;
++    }
++    if (!SetupDeCeOpcodeContextMatches(base, true)) {
++        LOGERR("[OPLUS V59 SETUPGUARD] patched setup_de_ce verification failed\n");
++        return false;
++    }
++    LOGINFO("[OPLUS V59 SETUPGUARD] disabled exact passwordless-only legacy CE branch\n");
++    return true;
++}
++
+ template <typename T>
+-T FindSymbol(void* handle, const char* name) {
++T FindSymbol(void* handle, const char* name, void** raw_symbol = nullptr) {
+     dlerror();
+     void* symbol = dlsym(handle, name);
+     const char* error = dlerror();
+@@ -658,27 +874,42 @@ T FindSymbol(void* handle, const char* name) {
+         LOGERR("Oplus H.40 decrypt: missing symbol %s: %s\n", name, error);
+         return nullptr;
+     }
++    if (raw_symbol != nullptr) *raw_symbol = symbol;
+     return reinterpret_cast<T>(symbol);
+ }
+ 
+ const Api& GetApi() {
+     static const Api api = [] {
+         Api loaded;
+-        loaded.handle = dlopen(kLibrary, RTLD_NOW | RTLD_LOCAL);
++        loaded.handle = dlopen(credential_protocol::kOemLibraryPath,
++                               RTLD_NOW | RTLD_LOCAL);
+         if (loaded.handle == nullptr) {
+             LOGINFO("Oplus H.40 decrypt unavailable: %s\n", dlerror());
+             return loaded;
+         }
+-        loaded.setup_de_ce = FindSymbol<SetupDeCeFn>(loaded.handle, kSetupDeCeSymbol);
++        void* raw_setup_de_ce = nullptr;
++        void* raw_get_password_type = nullptr;
++        void* raw_mount_metadata = nullptr;
++        loaded.setup_de_ce = FindSymbol<SetupDeCeFn>(
++                loaded.handle, kSetupDeCeSymbol, &raw_setup_de_ce);
+         loaded.get_password_type =
+-                FindSymbol<GetPasswordTypeFn>(loaded.handle, kGetPasswordTypeSymbol);
+-        loaded.mount_metadata = FindSymbol<MountMetadataFn>(loaded.handle, kMountMetadataSymbol);
++                FindSymbol<GetPasswordTypeFn>(loaded.handle, kGetPasswordTypeSymbol,
++                                              &raw_get_password_type);
++        loaded.mount_metadata = FindSymbol<MountMetadataFn>(
++                loaded.handle, kMountMetadataSymbol, &raw_mount_metadata);
+         if (loaded.setup_de_ce == nullptr || loaded.get_password_type == nullptr ||
+             loaded.mount_metadata == nullptr) {
+             dlclose(loaded.handle);
+             loaded = {};
+             return loaded;
+         }
++        if (!InstallSetupDeCeNoCredentialGuard(raw_setup_de_ce,
++                                               raw_get_password_type,
++                                               raw_mount_metadata)) {
++            dlclose(loaded.handle);
++            loaded = {};
++            return loaded;
++        }
+         LOGINFO("Oplus H.40 decrypt ABI loaded\n");
+         return loaded;
+     }();

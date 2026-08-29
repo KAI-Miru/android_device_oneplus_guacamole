@@ -252,6 +252,7 @@ def main() -> None:
         b"[H40 PORTIDENTITY] using mounted dynamic system",
         b"[H40 V51 PARENT]",
         b"[OPLUS V58 PWDPROBE]",
+        b"[OPLUS V59 SETUPGUARD]",
     ):
         require(marker in relocated, f"private recovery lacks marker {marker!r}")
 

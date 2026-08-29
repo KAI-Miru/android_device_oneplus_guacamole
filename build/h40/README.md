@@ -19,6 +19,7 @@ Patch SHA-256 values:
 c196b8bd497039ae9ec7587212d47e0fe105867982b4ee06a02bbe30507b464e  recovery.patch
 a79e9a761ded5640f4413c48191fee3bc511e7eb15f316cbac8aa0f6b264298d  recovery-no-credential.patch
 beaee1382a16e14a3d7bc238e357e1953c774f24ede6ec07f445c853436c477a  recovery-password-probe.patch
+45e38fa9fd62af7854ec6b109812d53c6edee70c103403b400b2301ad045e507  recovery-setup-de-ce-guard.patch
 034b64defe6e7ff10b91e8948e0f2ac19da3a7f434bb03e9e6351fba283f2cda  vold.patch
 ee2472e7bb81f320d2fd473cedadc3db2f475fd15551beb3c4948d73522e7199  vold-no-credential.patch
 0cd8269b20fa83fcfff42eee02a6a0be8a0d8a74bb2ee9baba8449dc26441523  security.patch
@@ -29,13 +30,14 @@ The original patch set was exported by successful GitHub Actions run
 [`33031812198`](https://github.com/KAI-Miru/android_device_oneplus_guacamole/actions/runs/33031812198).
 The recovery patch was subsequently regenerated from the same pinned commit to
 support both an already-mounted dynamic system and the static by-name system
-layout. All seven patches apply cleanly in their documented order with
+layout. All eight patches apply cleanly in their documented order with
 `git apply --check --whitespace=error-all` to their pinned commits.
 
 ## Responsibilities
 
-- `recovery.patch`, `recovery-no-credential.patch`, and
-  `recovery-password-probe.patch` add the H.40 adapter,
+- `recovery.patch`, `recovery-no-credential.patch`,
+  `recovery-password-probe.patch`, and `recovery-setup-de-ce-guard.patch` add
+  the H.40 adapter,
   isolated credential helper, user-0 dispatch, parent-process credentialed and
   no-credential handoffs, and universal installed-system identity discovery
   for static and dynamic partition layouts. The supplement avoids the stock
