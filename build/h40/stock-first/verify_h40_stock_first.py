@@ -256,6 +256,7 @@ def main() -> None:
         b"[OPLUS DECRYPT] password state: validated .pwd protector; OEM password-type call permitted",
         b"[OPLUS DECRYPT] setup guard:",
         b"[OPLUS DECRYPT] password state: OEM reports no active credential; treating retained .pwd as advisory metadata",
+        b"[OPLUS DECRYPT] no credential: validated nopassword stretching",
     ):
         require(marker in relocated, f"private recovery lacks marker {marker!r}")
 
