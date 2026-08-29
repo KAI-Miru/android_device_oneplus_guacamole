@@ -16,6 +16,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import re
 import struct
 import sys
 from collections import defaultdict, deque
@@ -546,6 +547,26 @@ def wrapper_for(private_basename: str) -> bytes:
     ).encode("ascii")
 
 
+def patch_shell_prompt(relative: str, data: bytes, hostname: str) -> tuple[bytes, bool]:
+    replacements = {
+        "system/etc/mkshrc": (
+            b": ${HOSTNAME:=$(getprop ro.product.device)}",
+            f": ${{HOSTNAME:={hostname}}}".encode("ascii"),
+        ),
+        "system/etc/bash/bashrc": (
+            b"export HOSTNAME=$(getprop ro.product.device)",
+            f"export HOSTNAME={hostname}".encode("ascii"),
+        ),
+    }
+    replacement = replacements.get(relative)
+    if replacement is None:
+        return data, False
+    old, new = replacement
+    if data.count(old) != 1:
+        raise SystemExit(f"expected exactly one device-derived prompt in {relative}")
+    return data.replace(old, new), True
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--twrp-tree", type=Path, required=True)
@@ -556,11 +577,15 @@ def main() -> None:
     parser.add_argument("--elf-audit-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--prompt-hostname", required=True)
     parser.add_argument("--entry-point", action="append", default=[])
     parser.add_argument("--required-helper", action="append", default=[])
     parser.add_argument("--optional-helper", action="append", default=[])
     parser.add_argument("--original-asset", action="append", default=[])
     args = parser.parse_args()
+
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,62}", args.prompt_hostname):
+        raise SystemExit(f"invalid shell prompt hostname: {args.prompt_hostname!r}")
 
     entry_points = [newc.normalize_name(item) for item in (args.entry_point or ["system/bin/recovery"])]
     if len({PurePosixPath(item).name for item in entry_points}) != len(entry_points):
@@ -775,11 +800,15 @@ def main() -> None:
         wrapper_records.append(record)
 
     asset_records = []
+    prompt_targets = set()
     for relative in original_assets:
         source = source_entries[relative]
         if relative in stock_entries:
             raise SystemExit(f"refusing to overwrite stock path with a TWRP asset: {relative}")
-        copied = clone(source, relative, None, next_ino)
+        target_data, prompt_patched = patch_shell_prompt(
+            relative, source.data, args.prompt_hostname
+        )
+        copied = clone(source, relative, target_data, next_ino)
         next_ino += 1
         overlay.append(copied)
         record = {
@@ -787,11 +816,22 @@ def main() -> None:
             "source": relative,
             "target": relative,
             "source_sha256": sha256(source.data),
-            "target_sha256": sha256(source.data),
-            "bytes": len(source.data),
+            "target_sha256": sha256(target_data),
+            "bytes": len(target_data),
         }
+        if prompt_patched:
+            record["transform"] = "fixed_device_prompt_hostname"
+            record["prompt_hostname"] = args.prompt_hostname
+            prompt_targets.add(relative)
         records.append(record)
         asset_records.append(record)
+    expected_prompt_targets = {"system/etc/mkshrc", "system/etc/bash/bashrc"}
+    if prompt_targets != expected_prompt_targets:
+        raise SystemExit(
+            "device prompt assets are incomplete: "
+            f"missing={sorted(expected_prompt_targets - prompt_targets)}, "
+            f"extra={sorted(prompt_targets - expected_prompt_targets)}"
+        )
 
     feature_link_records = []
     for feature, bundle in feature_bundles.items():
@@ -988,6 +1028,7 @@ def main() -> None:
         "twrp_cpio_sha256": sha256(args.twrp_cpio.read_bytes()),
         "stock_cpio_sha256": sha256(args.stock_cpio.read_bytes()),
         "private_interpreter": PRIVATE_INTERPRETER,
+        "prompt_hostname": args.prompt_hostname,
         "entry_points": entry_points,
         "required_helpers": [newc.normalize_name(item) for item in required_helpers],
         "optional_helpers_included": [

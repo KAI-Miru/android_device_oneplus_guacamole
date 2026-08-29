@@ -59,6 +59,7 @@ python3 "$script_dir/make_private_twrp_overlay.py" \
   --elf-audit-dir "$script_dir" \
   --output "$work_dir/private-overlay.cpio" \
   --manifest "$work_dir/private-overlay.json" \
+  --prompt-hostname guacamole \
   --required-helper system/bin/magiskboot
 python3 "$script_dir/make_stock_patch_overlay.py" \
   --stock-tree "$work_dir/stock-tree" \

@@ -223,7 +223,27 @@ def main() -> None:
         require(len(final_index[target].data) == record["bytes"], f"critical private path size changed: /{target}")
         require(sha256(final_index[target].data) == record["target_sha256"], f"critical private path changed: /{target}")
     require(bool(final_index["file_contexts"].data), "generated root /file_contexts is empty")
-    require(bool(final_index["system/etc/mkshrc"].data), "TWRP mkshrc is empty")
+    require(
+        private_manifest.get("prompt_hostname") == "guacamole",
+        "wrong manifested shell prompt hostname",
+    )
+    for prompt_path in ("system/etc/mkshrc", "system/etc/bash/bashrc"):
+        prompt_record = private_records[prompt_path]
+        require(
+            prompt_record.get("transform") == "fixed_device_prompt_hostname"
+            and prompt_record.get("prompt_hostname") == "guacamole",
+            f"shell prompt transformation is not audited: /{prompt_path}",
+        )
+    mkshrc = final_index["system/etc/mkshrc"].data
+    bashrc = final_index["system/etc/bash/bashrc"].data
+    require(bool(mkshrc), "TWRP mkshrc is empty")
+    require(b": ${HOSTNAME:=guacamole}" in mkshrc, "Guacamole mksh prompt hostname is absent")
+    require(b"export HOSTNAME=guacamole" in bashrc, "Guacamole Bash prompt hostname is absent")
+    require(
+        b"getprop ro.product.device" not in mkshrc
+        and b"getprop ro.product.device" not in bashrc,
+        "shell prompt still inherits the mounted ROM product identity",
+    )
     require_symlink(final_index, "sbin/bash", b"/system/bin/bash", "legacy Bash route")
     require_symlink(final_index, "etc/bash", b"/system/etc/bash", "Bash configuration route")
     require_symlink(final_index, "etc/nano", b"/system/etc/nano", "Nano configuration route")
