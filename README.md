@@ -67,8 +67,11 @@ unreviewed image or assume temporary boot is supported by every ColorOS base.
   port; non-owner credential domains are formally out of scope.
 - ext4, F2FS, and EROFS kernel filesystem support: present on the tested device.
 - ADB: working in ordinary recovery use.
-- MTP: physically validated on the tested image. ADB sideload USB transitions
-  have been exercised; a complete sideload transfer remains a release test.
+- MTP: host enumeration is physically validated. The stock kernel's enforcing
+  file-descriptor denial is repaired by one early, hash-pinned live-policy
+  rule; an end-to-end transfer on the resulting image remains a release test.
+  ADB sideload USB transitions have been exercised; a complete sideload
+  transfer remains a release test.
 - Haptics, timezone data, cgroup configuration, exact Guacamole CommonDCS, and
   the stock QSEE plugin closure are installed from one checked, manifest-backed
   overlay.

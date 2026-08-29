@@ -17,7 +17,19 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEVICE_ROOT = REPO_ROOT / "recovery" / "root"
+PREBUILT_ROOT = REPO_ROOT / "prebuilt" / "h40"
 OVERLAY_ROOT = REPO_ROOT / "prebuilt" / "h40" / "overlay"
+
+MTP_POLICY_TARGET = "system/bin/guacamole_mtp_policy"
+MTP_POLICY_SOURCE = PREBUILT_ROOT / "tools" / "guacamole-mtp-policy"
+MTP_POLICY_BYTES = 356_584
+MTP_POLICY_SHA256 = "9837db9db475eb74b6715f081768cb6a1f2fb5a2b2ac15755686062501bace27"
+MTP_POLICY_RULE = "allow kernel recovery fd use"
+MTP_POLICY_COMMAND = (
+    f'    exec u:r:recovery:s0 root root -- /{MTP_POLICY_TARGET} '
+    f'--live "{MTP_POLICY_RULE}"\n'
+)
+DEFAULT_CLASS_ANCHOR = "    class_start default\n"
 
 MTK_E2FSCK = (
     "    exec /sbin/e2fsck -y /dev/block/platform/mtk-msdc.0/by-name/cache\n"
@@ -131,6 +143,7 @@ on property:sys.usb.config=mtp,adb && property:sys.usb.ffs.ready=1 && property:s
 """
 
 PAYLOADS = (
+    MTP_POLICY_TARGET,
     "system/etc/recovery.fstab",
     "system/etc/twrp.flags",
     "system/usr/share/zoneinfo/tzdata",
@@ -155,6 +168,14 @@ PREBUILT_OVERLAY_PAYLOADS = {
     "vendor/firmware/80ms_RTP_170Hz.bin",
     "vendor/lib64/libspl.so",
     "vendor/lib64/libops.so",
+}
+
+PINNED_PAYLOAD_SOURCES = {
+    MTP_POLICY_TARGET: MTP_POLICY_SOURCE,
+}
+
+COPIED_PAYLOAD_MODES = {
+    MTP_POLICY_TARGET: 0o100755,
 }
 
 ROOT_MOUNT_TABLES = {
@@ -274,6 +295,14 @@ def main() -> None:
     init_rc = init_rc[:none_at] + tail
     init_rc = replace_once(init_rc, MTP_RULES_ANCHOR, MTP_RULES_ANCHOR + MTP_RULES,
                            "MTP rule insertion")
+    if MTP_POLICY_TARGET in init_rc or MTP_POLICY_RULE in init_rc:
+        raise SystemExit("stock init already contains the Guacamole MTP policy hook")
+    init_rc = replace_once(
+        init_rc,
+        DEFAULT_CLASS_ANCHOR,
+        MTP_POLICY_COMMAND + DEFAULT_CLASS_ANCHOR,
+        "default-class MTP policy hook",
+    )
     write_text_lf(init_path, init_rc)
 
     qcom_rc = replace_once(read_text(qcom_path), DUPLICATE_USB_OWNER, "",
@@ -282,11 +311,18 @@ def main() -> None:
 
     copied = {}
     for relative in PAYLOADS:
-        source_root = OVERLAY_ROOT if relative in PREBUILT_OVERLAY_PAYLOADS else DEVICE_ROOT
-        source = source_root / relative
+        source = PINNED_PAYLOAD_SOURCES.get(relative)
+        if source is None:
+            source_root = OVERLAY_ROOT if relative in PREBUILT_OVERLAY_PAYLOADS else DEVICE_ROOT
+            source = source_root / relative
         target = root / relative
         if not source.is_file() or source.stat().st_size == 0:
             raise SystemExit(f"device payload is missing or empty: {relative}")
+        if relative == MTP_POLICY_TARGET and (
+            source.stat().st_size != MTP_POLICY_BYTES
+            or sha256(source) != MTP_POLICY_SHA256
+        ):
+            raise SystemExit("pinned Guacamole MTP policy helper identity mismatch")
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
         copied[relative] = {"bytes": target.stat().st_size, "sha256": sha256(target)}
@@ -325,6 +361,15 @@ def main() -> None:
         "mtp_function_and_rules_present": (
             read_text(init_path).count(MTP_FUNCTION) == 3
             and MTP_RULES.strip() in read_text(init_path)
+        ),
+        "mtp_policy_helper_exact": (
+            (root / MTP_POLICY_TARGET).stat().st_size == MTP_POLICY_BYTES
+            and sha256(root / MTP_POLICY_TARGET) == MTP_POLICY_SHA256
+        ),
+        "mtp_policy_hook_synchronous": (
+            read_text(init_path).count(MTP_POLICY_COMMAND) == 1
+            and read_text(init_path).index(MTP_POLICY_COMMAND)
+            < read_text(init_path).index(DEFAULT_CLASS_ANCHOR)
         ),
         "obsolete_modem_wait_removed": MODEM_WAIT not in read_text(init_path),
         "premature_healthd_start_removed": (
@@ -396,6 +441,7 @@ def main() -> None:
             "system/etc/twrp.flags",
         ],
         "copied_payloads": copied,
+        "copied_payload_modes": COPIED_PAYLOAD_MODES,
         "checks": checks,
     }
     rendered = json.dumps(report, indent=2, sort_keys=True) + "\n"

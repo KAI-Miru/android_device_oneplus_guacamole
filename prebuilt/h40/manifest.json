@@ -30,6 +30,14 @@
   "files": {
     "boot-header-v2.bin": {"bytes": 4096, "sha256": "171d4e335f6a2009581c8a71744a6a716624f793ccc81b956eac8a4ddd20f479"},
     "kernel": {"bytes": 40142864, "sha256": "78a2ec421a44e0b4c20d0132e25ce0e6d91b521929de0139cfff35e5c31f7b84"},
+    "tools/guacamole-mtp-policy": {
+      "bytes": 356584,
+      "sha256": "9837db9db475eb74b6715f081768cb6a1f2fb5a2b2ac15755686062501bace27",
+      "source_apk": "Magisk-v30.7.apk",
+      "source_apk_sha256": "e0d32d2123532860f97123d927b1bb86c4e08e6fd8a48bfc6b5bee0afae9ebd5",
+      "source_path": "lib/arm64-v8a/libmagiskpolicy.so",
+      "source_release": "https://github.com/topjohnwu/Magisk/releases/tag/v30.7"
+    },
     "ramdisk-stock.cpio.gz": {"bytes": 21057538, "sha256": "172115c848149fb0fa99ad1bb87a0ad2a502d37484c85fed36671d896c5f20b1"},
     "recovery-dtbo.img": {"bytes": 5165936, "sha256": "ddf316ecd06a35b554cf66d0f217063490eccb9e297c4c51302ae03cb6cdafef"},
     "dtb.img": {"bytes": 12168729, "sha256": "36f8cbbcf1fd393b8df397f69596069e715bf8da1603b0c8f5fd690005fcf7eb"}

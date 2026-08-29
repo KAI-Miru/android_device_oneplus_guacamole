@@ -77,6 +77,14 @@ def main() -> None:
     fix_facts = json.loads(fix_report.read_text(encoding="utf-8"))
     targets = set(fix_facts["patched_files"])
     targets.update(fix_facts["copied_payloads"])
+    copied_payload_modes = fix_facts.get("copied_payload_modes", {})
+    if not set(copied_payload_modes) <= set(fix_facts["copied_payloads"]):
+        raise SystemExit("copy-mode declaration refers to a non-payload target")
+    for target, mode in copied_payload_modes.items():
+        if not isinstance(mode, int) or mode & 0o170000 != 0o100000:
+            raise SystemExit(f"invalid copied payload mode for {target}: {mode!r}")
+        if target in source_index and source_index[target].mode != mode:
+            raise SystemExit(f"copy-mode declaration would change stock metadata: {target}")
     replacements = {}
     for target in sorted(targets):
         path = stage / target
@@ -102,10 +110,11 @@ def main() -> None:
     next_ino = max(entry.ino for entry in source_entries) + 1
     added = {}
     for target, data in sorted(remaining.items()):
+        mode = copied_payload_modes.get(target, 0o100644)
         output_entries.append(
-            newc.regular_file(target, data, mode=0o100644, ino=next_ino)
+            newc.regular_file(target, data, mode=mode, ino=next_ino)
         )
-        added[target] = {"bytes": len(data), "sha256": sha256(data)}
+        added[target] = {"bytes": len(data), "sha256": sha256(data), "mode": mode}
         next_ino += 1
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -126,6 +135,9 @@ def main() -> None:
     for target, data in replacements.items():
         if final_index[target].data != data:
             raise SystemExit(f"final recovery-fix payload mismatch: {target}")
+    for target, mode in copied_payload_modes.items():
+        if final_index[target].mode != mode:
+            raise SystemExit(f"final recovery-fix payload mode mismatch: {target}")
 
     report = {
         "format": 1,
@@ -142,6 +154,7 @@ def main() -> None:
             "replacement_metadata_preserved": True,
             "no_duplicate_paths": True,
             "all_reviewed_fixes_installed": True,
+            "copied_payload_modes_preserved": True,
         },
     }
     args.report.parent.mkdir(parents=True, exist_ok=True)

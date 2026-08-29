@@ -28,6 +28,7 @@ STOCK_LOGICAL_ROWS = {
 }
 
 PRIVATE_CONTEXTS = (
+    "/system/bin/guacamole_mtp_policy u:object_r:system_file:s0",
     "/system/tw/linker64          u:object_r:system_linker_exec:s0",
     "/system/tw/bin(/.*)?         u:object_r:system_file:s0",
     "/system/tw/lib64(/.*)?       u:object_r:system_lib_file:s0",

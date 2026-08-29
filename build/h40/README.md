@@ -58,6 +58,8 @@ layout. All eight patches apply cleanly in their documented order with
   stale waits, replaces the stock mount tables with the audited Guacamole
   tables, suppresses unavailable stock services, then installs the MTP,
   cgroup, timezone, haptics, and QSEE payloads required by the hybrid ramdisk.
+  It also installs the pinned MTP policy helper and runs the single
+  `allow kernel recovery fd use` rule synchronously before default services.
 - `stock-first/build_full_boot.sh` starts from the checked H.40 ramdisk, builds
   the exact private TWRP dependency closure and complete Bash/Nano/ZIP feature
   bundles, restores generated `/file_contexts`, shell configuration, `/bin`,
@@ -110,7 +112,8 @@ layout. All eight patches apply cleanly in their documented order with
 1. Never edit a patch without updating its SHA-256 here and in the workflow.
 2. Never move an upstream commit without regenerating and reviewing all patches.
 3. Preserve the stock ColorOS policy, stock recovery, kernel, DTB, recovery
-   DTBO, and `/system/lib64/libbinder.so`.
+   DTBO, and `/system/lib64/libbinder.so`; MTP compatibility is a one-rule
+   early live-policy amendment, not a replacement compiled policy.
 4. Keep the Keystore2 service disabled; the adapter starts it only during an
    accepted credential flow.
 5. Preserve both exact-H.40 OEM hash gates and fail closed on ambiguity:

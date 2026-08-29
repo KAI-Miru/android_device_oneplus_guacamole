@@ -24,6 +24,15 @@ from repack_boot_v2 import AVB_FOOTER_MAGIC, parse_boot_v2
 
 
 EXPECTED_SIZE = 100663296
+MTP_POLICY_SOURCE = "tools/guacamole-mtp-policy"
+MTP_POLICY_TARGET = "system/bin/guacamole_mtp_policy"
+MTP_POLICY_RULE = "allow kernel recovery fd use"
+MTP_POLICY_COMMAND = (
+    f'    exec u:r:recovery:s0 root root -- /{MTP_POLICY_TARGET} '
+    f'--live "{MTP_POLICY_RULE}"\n'
+).encode()
+MTP_POLICY_CONTEXT = b"/system/bin/guacamole_mtp_policy u:object_r:system_file:s0"
+DEFAULT_CLASS_ANCHOR = b"    class_start default\n"
 PRIVATE_VERIFY = (
     b"_Z21OplusCredentialVerifyNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEEi"
 )
@@ -143,6 +152,16 @@ def main() -> None:
     require(actual_changes <= allowed_changes, f"unapproved stock changes: {sorted(actual_changes - allowed_changes)}")
     require(final_index["system/bin/recovery"] == stock_index["system/bin/recovery"], "stock recovery changed")
     require(final_index["sepolicy"] == stock_index["sepolicy"], "stock SELinux policy changed")
+
+    policy_record = manifest["files"][MTP_POLICY_SOURCE]
+    policy_tool = final_index.get(MTP_POLICY_TARGET)
+    require(policy_tool is not None, "Guacamole MTP policy helper is absent")
+    require(
+        policy_tool.mode & 0o170000 == 0o100000 and policy_tool.mode & 0o777 == 0o755,
+        "Guacamole MTP policy helper is not mode 0755",
+    )
+    require(len(policy_tool.data) == policy_record["bytes"], "MTP policy helper size mismatch")
+    require(sha256(policy_tool.data) == policy_record["sha256"], "MTP policy helper hash mismatch")
 
     sbin = final_index.get("sbin")
     require(
@@ -299,6 +318,21 @@ def main() -> None:
     )
     require(init_rc.count(b"mkdir /config/usb_gadget/g1/functions/mtp.gs0") == 3, "MTP configfs setup is incomplete")
     require(init_rc.count(b"property:sys.usb.config=sideload") == 2, "sideload ownership rules changed")
+    require(init_rc.count(MTP_POLICY_COMMAND) == 1, "MTP live-policy hook is absent or duplicated")
+    require(init_rc.count(DEFAULT_CLASS_ANCHOR) == 1, "default service-class anchor changed")
+    require(
+        init_rc.index(MTP_POLICY_COMMAND) < init_rc.index(DEFAULT_CLASS_ANCHOR),
+        "MTP live-policy hook does not run before default services",
+    )
+    require(
+        b"allow kernel tmpfs file read" not in init_rc,
+        "unrelated Hotdog APEX policy rule leaked into Guacamole",
+    )
+    for contexts_path in ("plat_file_contexts", "system/etc/selinux/plat_file_contexts"):
+        require(
+            MTP_POLICY_CONTEXT in final_index[contexts_path].data,
+            f"MTP policy helper context is absent from {contexts_path}",
+        )
     require(b"sys.usb.ffs.ready" not in qcom_rc, "Qualcomm init still competes for USB ownership")
     require(b"service qseecomd /system/bin/qseecomd\n    disabled" in init_rc, "qseecomd is not explicit-start-only")
     require(b"service keystore2 /system/tw/bin/keystore2" in final_index["system/etc/init/keystore2.rc"].data, "private Keystore2 service is absent")
@@ -340,6 +374,8 @@ def main() -> None:
             "op2_is_cache": True,
             "single_usb_owner": True,
             "mtp_and_sideload_rules_present": True,
+            "mtp_fd_policy_rule_synchronous": True,
+            "mtp_policy_helper_exact": True,
             "qsee_and_keystore_explicit_start_only": True,
             "commondcs_system_ext_rc2_exact": True,
             "haptics_tzdata_qsee_plugins_exact": True,
