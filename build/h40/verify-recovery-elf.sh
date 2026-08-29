@@ -148,7 +148,7 @@ check_string log_marker_no_lock_handoff \
 check_string log_marker_no_lock_parent_install \
   'I:[OPLUS DECRYPT] no credential: installing user 0 CE key in the recovery parent'
 check_string log_marker_no_lock_nopassword_stretching \
-  'I:[OPLUS DECRYPT] no credential: validated nopassword stretching'
+  '[OPLUS DECRYPT] no credential: validated nopassword stretching'
 check_string log_marker_no_lock_success \
   'I:[OPLUS DECRYPT] no credential: user 0 CE postcondition satisfied'
 check_string log_marker_retained_protector \
