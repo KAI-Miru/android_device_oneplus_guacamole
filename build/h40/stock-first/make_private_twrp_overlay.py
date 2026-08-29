@@ -550,21 +550,39 @@ def wrapper_for(private_basename: str) -> bytes:
 def patch_shell_prompt(relative: str, data: bytes, hostname: str) -> tuple[bytes, bool]:
     replacements = {
         "system/etc/mkshrc": (
-            b": ${HOSTNAME:=$(getprop ro.product.device)}",
+            (b": ${HOSTNAME:=$(getprop ro.product.device)}",),
             f": ${{HOSTNAME:={hostname}}}".encode("ascii"),
         ),
         "system/etc/bash/bashrc": (
-            b"export HOSTNAME=$(getprop ro.product.device)",
+            (
+                b"export HOSTNAME=$(getprop ro.product.device)",
+                b"export HOSTNAME=$(getprop ro.lineage.device)",
+            ),
             f"export HOSTNAME={hostname}".encode("ascii"),
         ),
     }
     replacement = replacements.get(relative)
     if replacement is None:
         return data, False
-    old, new = replacement
-    if data.count(old) != 1:
-        raise SystemExit(f"expected exactly one device-derived prompt in {relative}")
-    return data.replace(old, new), True
+    old_variants, new = replacement
+    old_counts = {old: data.count(old) for old in old_variants}
+    old_total = sum(old_counts.values())
+    new_count = data.count(new)
+
+    # Keep the transform idempotent for locally reconstructed ramdisks while
+    # still failing closed on missing or ambiguous upstream prompt sources.
+    if old_total == 0 and new_count == 1:
+        return data, True
+    if old_total != 1 or new_count != 0:
+        variants = ", ".join(
+            f"{old.decode('ascii')}={count}" for old, count in old_counts.items()
+        )
+        raise SystemExit(
+            f"expected exactly one supported device-derived prompt in {relative}; "
+            f"found {variants}, fixed={new_count}"
+        )
+    old = next(old for old, count in old_counts.items() if count == 1)
+    return data.replace(old, new, 1), True
 
 
 def main() -> None:

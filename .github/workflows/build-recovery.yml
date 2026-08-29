@@ -427,6 +427,57 @@ jobs:
           compression-level: 0
           retention-days: 14
 
+      - name: Stage emergency stock-first recovery material
+        if: ${{ always() && steps.build.outcome == 'success' && steps.stock_first.outcome != 'success' }}
+        run: |
+          set -euo pipefail
+          emergency="$RUNNER_TEMP/guacamole-h40-emergency"
+          stage="$RUNNER_TEMP/guacamole-h40-stage"
+          work="$RUNNER_TEMP/guacamole-h40-stock-first"
+          mkdir -p "$emergency"
+
+          copy_if_present() {
+            local source="$1" destination="$2"
+            if test -f "$source"; then
+              install -m 0644 "$source" "$emergency/$destination"
+            fi
+          }
+
+          copy_if_present "$stage/twrp.cpio" twrp-compiled-input.cpio
+          copy_if_present "$work/private-overlay.cpio" private-overlay.cpio
+          copy_if_present "$work/final-ramdisk.cpio.gz" final-ramdisk-UNVERIFIED.cpio.gz
+          copy_if_present "$work/boot.img" \
+            guacamole-H40-stock-first-TWRP-ColorOS-UNVERIFIED-DO-NOT-FLASH.img
+          copy_if_present "$work/private-overlay.json" private-overlay.json
+          copy_if_present "$work/hybrid-base-verification.json" hybrid-base-verification.json
+          copy_if_present "$work/verification.json" verification.json
+          copy_if_present "$work/avb-info.txt" avb-info.txt
+
+          cat > "$emergency/EMERGENCY-README.txt" <<'EOF'
+          GUACAMOLE STOCK-FIRST EMERGENCY RECOVERY MATERIAL
+
+          The normal stock-first assembly or verification step failed after
+          compilation.  twrp-compiled-input.cpio preserves the complete
+          compiled TWRP input for a local reconstruction.  If an image is
+          present it is explicitly unverified and MUST NOT be flashed or
+          distributed until the failed verifier has been diagnosed.
+          EOF
+          (
+            cd "$emergency"
+            find . -type f ! -name SHA256SUMS -print0 | LC_ALL=C sort -z \
+              | xargs -0 sha256sum > SHA256SUMS
+          )
+
+      - name: Upload emergency stock-first recovery material
+        if: ${{ always() && steps.build.outcome == 'success' && steps.stock_first.outcome != 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: guacamole-stock-first-emergency-recovery-material
+          path: ${{ runner.temp }}/guacamole-h40-emergency/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
       - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

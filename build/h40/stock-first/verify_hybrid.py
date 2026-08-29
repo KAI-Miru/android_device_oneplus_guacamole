@@ -811,6 +811,11 @@ def main() -> None:
         and b"getprop ro.product.device" not in bashrc,
         "shell prompt still inherits the mounted ROM product identity",
     )
+    require(
+        b"getprop ro.lineage.device" not in mkshrc
+        and b"getprop ro.lineage.device" not in bashrc,
+        "shell prompt still inherits the recovery build product identity",
+    )
     require_symlink(final, "sbin/bash", b"/system/bin/bash", "legacy Bash route")
     require_symlink(final, "etc/bash", b"/system/etc/bash", "Bash configuration route")
     require_symlink(final, "etc/nano", b"/system/etc/nano", "Nano configuration route")
