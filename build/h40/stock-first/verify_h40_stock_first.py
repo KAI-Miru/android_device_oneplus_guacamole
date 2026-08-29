@@ -301,6 +301,10 @@ def main() -> None:
         b"[OPLUS DECRYPT] setup guard:",
         b"[OPLUS DECRYPT] password state: OEM reports no active credential; treating retained .pwd as advisory metadata",
         b"[OPLUS DECRYPT] no credential: validated nopassword stretching",
+        b"[OPLUS DECRYPT] no credential: selected direct-AES synthetic-password route",
+        b"[OPLUS DECRYPT] no credential: selected empty-auth KeyStorage route",
+        b"[OPLUS DECRYPT] no credential: deriving the default synthetic-password secret",
+        b"credential services unavailable before no-credential CE install",
     ):
         require(marker in relocated, f"private recovery lacks marker {marker!r}")
 
@@ -372,6 +376,7 @@ def main() -> None:
             "stock_first_path_contract_complete": True,
             "bash_nano_zip_bundles_complete": True,
             "universal_owner_decryption_markers_present": True,
+            "passwordless_ce_layout_dispatch_complete": True,
             "oem_verifier_isolated": True,
             "mount_table_rc2_exact": True,
             "phantom_mounts_absent": True,

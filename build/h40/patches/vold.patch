@@ -141,13 +141,22 @@ index d9f034b538454354a65682dd58ed02f4badd7d5b..d0a9d112186fae9b166e50fdb14be502
 +static bool Decrypt_User_Synth_Pass_Impl(const userid_t user_id,
 +		const std::string& Password, bool h40_current_only) {
 +	if (h40_current_only &&
-+		(user_id != 0 || Password.empty() || Password == "!")) {
++		(user_id != 0 || Password.empty())) {
 +		printf("[OPLUS DECRYPT] parent key install: refusing invalid current-only synthetic-password request\n");
 +		return false;
 +	}
  	printf("Attempting to decrypt user's synthetic password\n");
  	bool retval = false;
  	void* weaver_key = NULL;
+@@ -664,7 +671,7 @@ bool Decrypt_User_Synth_Pass(const userid_t user_id, const std::string& Password
+ 	// printf("pwd N %i R %i P %i salt ", pwd.scryptN, pwd.scryptR, pwd.scryptP); output_hex((char*)pwd.salt, pwd.salt_len); printf("\n");
+ 	// printf("Password: '%s'\n", Password.c_str());
+ 	// The password token is the password scrypted with the parameters from the password data file
+-	unsigned char password_token[PASSWORD_TOKEN_SIZE];
++	unsigned char password_token[PASSWORD_TOKEN_SIZE] = {};
+ 	if (Password != "!") {
+ 		if (!Get_Password_Data(spblob_path, handle_str, &pwd)) {
+ 			printf("Failed to Get_Password_Data\n");
 @@ -770,12 +777,13 @@ bool Decrypt_User_Synth_Pass(const userid_t user_id, const std::string& Password
  			}
  			android::hardware::hidl_vec<uint8_t> gk_pwd_token_hidl;
