@@ -1,0 +1,116 @@
+warning: in the working copy of 'gui/action.cpp', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'partition.cpp', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'partitionmanager.cpp', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'partitions.hpp', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'twrp.cpp', LF will be replaced by CRLF the next time Git touches it
+diff --git a/gui/action.cpp b/gui/action.cpp
+index 0d09400..acf3643 100755
+--- a/gui/action.cpp
++++ b/gui/action.cpp
+@@ -584,0 +585,2 @@ int GUIAction::page(std::string arg)
++	if (page_name == "backup")
++		PartitionManager.Refresh_Deferred_Data_Backup_Size();
+diff --git a/partition.cpp b/partition.cpp
+index 184cb16..c686c88 100755
+--- a/partition.cpp
++++ b/partition.cpp
+@@ -3062 +3062 @@ bool TWPartition::Restore_Image(PartitionSettings *part_settings) {
+-bool TWPartition::Update_Size(bool Display_Error) {
++bool TWPartition::Update_Size(bool Display_Error, bool Skip_Data_Backup_Size) {
+@@ -3101,5 +3101,10 @@ bool TWPartition::Update_Size(bool Display_Error) {
+-			Used = backup_exclusions.Get_Folder_Size(Mount_Point);
+-			Backup_Size = Used;
+-			int bak = (int)(Used / 1048576LLU);
+-			int fre = (int)(Free / 1048576LLU);
+-			LOGINFO("Data backup size is %iMB, free: %iMB.\n", bak, fre);
++			if (Skip_Data_Backup_Size) {
++				Backup_Size = 0;
++				LOGINFO("[OPLUS DECRYPT] partition refresh: deferred recursive /data backup-size scan\n");
++			} else {
++				Used = backup_exclusions.Get_Folder_Size(Mount_Point);
++				Backup_Size = Used;
++				int bak = (int)(Used / 1048576LLU);
++				int fre = (int)(Free / 1048576LLU);
++				LOGINFO("Data backup size is %iMB, free: %iMB.\n", bak, fre);
++			}
+diff --git a/partitionmanager.cpp b/partitionmanager.cpp
+index 0760bb0..695959f 100755
+--- a/partitionmanager.cpp
++++ b/partitionmanager.cpp
+@@ -584 +584,5 @@ void TWPartitionManager::Setup_Fstab_Partitions(bool Display_Error) {
+-		Update_System_Details();
++		if (DataManager::GetIntValue("tw_oplus_startup_partition_details_current") != 0) {
++			LOGINFO("[OPLUS DECRYPT] partition refresh: reusing post-decrypt startup state\n");
++		} else {
++			Update_System_Details();
++		}
+@@ -803 +807,6 @@ void TWPartitionManager::Decrypt_Data() {
+-					gui_msg("decrypt_success=Successfully decrypted with default password.");
++				#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
++					if (twrp::oplus_h40::IsActive())
++						gui_msg("decrypt_success=Data decrypted automatically.");
++					else
++				#endif
++						gui_msg("decrypt_success=Successfully decrypted with default password.");
+@@ -2048 +2057 @@ int TWPartitionManager::Resize_By_Path(string Path, bool Display_Error) {
+-void TWPartitionManager::Update_System_Details(void) {
++void TWPartitionManager::Update_System_Details(bool Skip_Data_Backup_Size) {
+@@ -2054 +2063,4 @@ void TWPartitionManager::Update_System_Details(void) {
+-		(*iter)->Update_Size(true);
++		const bool skip_data_backup = Skip_Data_Backup_Size &&
++			((*iter)->Mount_Point == "/data" || (*iter)->Mount_Point == "/datadata") &&
++			(*iter)->Has_Data_Media;
++		(*iter)->Update_Size(true, skip_data_backup);
+@@ -2129,0 +2142 @@ void TWPartitionManager::Update_System_Details(void) {
++	DataManager::SetValue("tw_oplus_data_backup_size_deferred", Skip_Data_Backup_Size ? 1 : 0);
+@@ -2132,0 +2146,8 @@ void TWPartitionManager::Update_System_Details(void) {
++void TWPartitionManager::Refresh_Deferred_Data_Backup_Size() {
++	if (DataManager::GetIntValue("tw_oplus_data_backup_size_deferred") == 0)
++		return;
++
++	LOGINFO("[OPLUS DECRYPT] partition refresh: resolving deferred /data backup size\n");
++	Update_System_Details();
++}
++
+@@ -2134,0 +2156,6 @@ void TWPartitionManager::Post_Decrypt(const string& Block_Device) {
++	bool oplus_fast_startup = false;
++
++#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
++	oplus_fast_startup = twrp::oplus_h40::IsActive() &&
++		DataManager::GetIntValue(TW_CRYPTO_PWTYPE) == 0;
++#endif
+@@ -2159 +2186,5 @@ void TWPartitionManager::Post_Decrypt(const string& Block_Device) {
+-		sleep(1); // Sleep for a bit so that the device will be ready
++		if (oplus_fast_startup) {
++			LOGINFO("[OPLUS DECRYPT] startup: skipping legacy post-decrypt settle delay\n");
++		} else {
++			sleep(1); // Sleep for a bit so that the device will be ready
++		}
+@@ -2178 +2209,3 @@ void TWPartitionManager::Post_Decrypt(const string& Block_Device) {
+-		Update_System_Details();
++		Update_System_Details(oplus_fast_startup);
++		DataManager::SetValue("tw_oplus_startup_partition_details_current",
++			oplus_fast_startup ? 1 : 0);
+diff --git a/partitions.hpp b/partitions.hpp
+index 843dfe5..11ddf0f 100755
+--- a/partitions.hpp
++++ b/partitions.hpp
+@@ -149 +149 @@ public:
+-	bool Update_Size(bool Display_Error);                                     // Updates size information
++	bool Update_Size(bool Display_Error, bool Skip_Data_Backup_Size = false); // Updates size information
+@@ -354 +354,2 @@ public:
+-	void Update_System_Details();                                             // Updates fstab, file systems, sizes, etc.
++	void Update_System_Details(bool Skip_Data_Backup_Size = false);            // Updates fstab, file systems, sizes, etc.
++	void Refresh_Deferred_Data_Backup_Size();                                  // Resolves a deferred /data backup-size scan
+diff --git a/twrp.cpp b/twrp.cpp
+index eedc581..0b72f6e 100644
+--- a/twrp.cpp
++++ b/twrp.cpp
+@@ -99 +99,6 @@ static void Decrypt_Page(bool SkipDecryption, bool datamedia) {
+-		PartitionManager.Update_System_Details();
++		if (DataManager::GetIntValue("tw_oplus_startup_partition_details_current") != 0) {
++			LOGINFO("[OPLUS DECRYPT] partition refresh: skipping redundant data-media startup refresh\n");
++			DataManager::SetValue("tw_oplus_startup_partition_details_current", 0);
++		} else {
++			PartitionManager.Update_System_Details();
++		}

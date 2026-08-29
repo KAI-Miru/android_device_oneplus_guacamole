@@ -305,6 +305,11 @@ def main() -> None:
         b"[OPLUS DECRYPT] no credential: selected empty-auth KeyStorage route",
         b"[OPLUS DECRYPT] no credential: deriving the default synthetic-password secret",
         b"credential services unavailable before no-credential CE install",
+        b"[OPLUS DECRYPT] partition refresh: deferred recursive /data backup-size scan",
+        b"[OPLUS DECRYPT] partition refresh: reusing post-decrypt startup state",
+        b"[OPLUS DECRYPT] partition refresh: skipping redundant data-media startup refresh",
+        b"[OPLUS DECRYPT] partition refresh: resolving deferred /data backup size",
+        b"Data decrypted automatically.",
     ):
         require(marker in relocated, f"private recovery lacks marker {marker!r}")
 

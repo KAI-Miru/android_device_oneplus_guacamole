@@ -159,6 +159,7 @@ jobs:
           620c17e844a76c9257fba0c1f1df1f50f617381c6e79acec5c0ad2960e58cf72  recovery-no-credential.patch
           91033f9fb2238c54bd88e0cb50f8d684e8ffcd3c3491ca9dba635d0688931b0f  recovery-password-probe.patch
           214fb48a0372dfef489235ab693024a1a15dac7d676398883a51dfc781d53192  recovery-setup-de-ce-guard.patch
+          9e05d4b223b9004bd2f06fd3c3edd04e2f3017ea1a1b243e32b1589d63a03013  recovery-fast-startup.patch
           0e77fb79b487c3e3c37c39d433a2ed51b2c2748da2e92778bd81a15cb180cd9e  vold.patch
           9d86b2154b43b04f74d9b52bd4d5ce214c8505153ee8061854f6d3199e324797  vold-no-credential.patch
           0cd8269b20fa83fcfff42eee02a6a0be8a0d8a74bb2ee9baba8449dc26441523  security.patch
@@ -173,6 +174,8 @@ jobs:
           git -C bootable/recovery apply --index --whitespace=error-all "$patch_dir/recovery-password-probe.patch"
           git -C bootable/recovery apply --check --index --whitespace=error-all "$patch_dir/recovery-setup-de-ce-guard.patch"
           git -C bootable/recovery apply --index --whitespace=error-all "$patch_dir/recovery-setup-de-ce-guard.patch"
+          git -C bootable/recovery apply --check --index --unidiff-zero --whitespace=error-all "$patch_dir/recovery-fast-startup.patch"
+          git -C bootable/recovery apply --index --unidiff-zero --whitespace=error-all "$patch_dir/recovery-fast-startup.patch"
           git -C system/vold apply --check --index --whitespace=error-all "$patch_dir/vold.patch"
           git -C system/vold apply --index --whitespace=error-all "$patch_dir/vold.patch"
           git -C system/vold apply --check --index --whitespace=error-all "$patch_dir/vold-no-credential.patch"
@@ -190,6 +193,11 @@ jobs:
           grep -Fq '[OPLUS DECRYPT] password state: validated .pwd protector; OEM password-type call permitted' bootable/recovery/oplus_h40_decrypt.cpp
           grep -Fq 'ProbeUser0PasswordProtector' bootable/recovery/oplus_h40_decrypt.cpp
           grep -Fq '[OPLUS DECRYPT] setup guard:' bootable/recovery/oplus_h40_decrypt.cpp
+          grep -Fq '[OPLUS DECRYPT] partition refresh: deferred recursive /data backup-size scan' bootable/recovery/partition.cpp
+          grep -Fq '[OPLUS DECRYPT] partition refresh: reusing post-decrypt startup state' bootable/recovery/partitionmanager.cpp
+          grep -Fq '[OPLUS DECRYPT] partition refresh: skipping redundant data-media startup refresh' bootable/recovery/twrp.cpp
+          grep -Fq 'PartitionManager.Refresh_Deferred_Data_Backup_Size();' bootable/recovery/gui/action.cpp
+          grep -Fq 'decrypt_success=Data decrypted automatically.' bootable/recovery/partitionmanager.cpp
           grep -Fq '[OPLUS DECRYPT] password state: OEM reports no active credential; treating retained .pwd as advisory metadata' bootable/recovery/oplus_h40_decrypt.cpp
           grep -Fq 'user0_state->no_credential = raw_password_type == -1;' bootable/recovery/oplus_h40_decrypt.cpp
           ! grep -Fq 'OEM probe contradicted the validated .pwd protector' bootable/recovery/oplus_h40_decrypt.cpp
