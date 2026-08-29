@@ -157,6 +157,7 @@ jobs:
             sha256sum --check <<'EOF'
           c196b8bd497039ae9ec7587212d47e0fe105867982b4ee06a02bbe30507b464e  recovery.patch
           a79e9a761ded5640f4413c48191fee3bc511e7eb15f316cbac8aa0f6b264298d  recovery-no-credential.patch
+          beaee1382a16e14a3d7bc238e357e1953c774f24ede6ec07f445c853436c477a  recovery-password-probe.patch
           034b64defe6e7ff10b91e8948e0f2ac19da3a7f434bb03e9e6351fba283f2cda  vold.patch
           ee2472e7bb81f320d2fd473cedadc3db2f475fd15551beb3c4948d73522e7199  vold-no-credential.patch
           0cd8269b20fa83fcfff42eee02a6a0be8a0d8a74bb2ee9baba8449dc26441523  security.patch
@@ -167,6 +168,8 @@ jobs:
           git -C bootable/recovery apply --index --whitespace=error-all "$patch_dir/recovery.patch"
           git -C bootable/recovery apply --check --index --whitespace=error-all "$patch_dir/recovery-no-credential.patch"
           git -C bootable/recovery apply --index --whitespace=error-all "$patch_dir/recovery-no-credential.patch"
+          git -C bootable/recovery apply --check --index --whitespace=error-all "$patch_dir/recovery-password-probe.patch"
+          git -C bootable/recovery apply --index --whitespace=error-all "$patch_dir/recovery-password-probe.patch"
           git -C system/vold apply --check --index --whitespace=error-all "$patch_dir/vold.patch"
           git -C system/vold apply --index --whitespace=error-all "$patch_dir/vold.patch"
           git -C system/vold apply --check --index --whitespace=error-all "$patch_dir/vold-no-credential.patch"
@@ -181,6 +184,8 @@ jobs:
           grep -Fq '[H40 PORTIDENTITY] using mounted dynamic system' bootable/recovery/oplus_h40_decrypt.cpp
           grep -Fq '[OPLUS V56 LAYOUT]' system/vold/FsCrypt.cpp
           grep -Fq '[OPLUS V57 NOCREDENTIAL]' bootable/recovery/oplus_h40_decrypt.cpp
+          grep -Fq '[OPLUS V58 PWDPROBE]' bootable/recovery/oplus_h40_decrypt.cpp
+          grep -Fq 'ProbeUser0PasswordProtector' bootable/recovery/oplus_h40_decrypt.cpp
           grep -Fq '[OPLUS V57 NOCREDENTIAL]' system/vold/FsCrypt.cpp
           grep -Fq 'H40_RECOVERY_KEYSTORE2_PERMISSION_SHIM_V51' system/security/keystore2/src/utils.rs
           grep -Fq 'H40_RECOVERY_BINDER_STABILITY_V0_V52' frameworks/native/libs/binder/Parcel.cpp
