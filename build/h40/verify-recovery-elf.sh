@@ -65,7 +65,7 @@ reject_string() {
   printf 'absent\t%s\t%s\n' "$label" "$value" >> "$string_report"
 }
 
-check_string dlopen_library 'libdecrypt_recovery.so'
+check_string dlopen_library '/system/lib64/libdecrypt_recovery.so'
 reject_string isolated_dlsym_verify \
   '_Z21OplusCredentialVerifyNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEEi'
 check_string dlsym_setup_de_ce '_Z11setup_de_cei'
@@ -78,82 +78,82 @@ check_string runtime_cryptoeng_fqname \
   'vendor.oplus.hardware.cryptoeng@1.0::ICryptoeng'
 check_string runtime_system_ce_path '/data/system_ce/0'
 check_string runtime_media_ce_path '/data/media/0'
-check_string log_marker_abi 'I:Oplus H.40 decrypt ABI loaded'
+check_string log_marker_abi 'I:[OPLUS DECRYPT] ABI loaded'
 
 adapter_version=v3
 if grep -Fqx -- \
-  'I:Oplus H.40 v4 hybrid activated; TWRP owns metadata mapping, OEM owns DE/CE' \
+  'I:[OPLUS DECRYPT] hybrid activated; TWRP owns metadata mapping, OEM owns DE/CE' \
   "$all_strings"
 then
   adapter_version=v4-hybrid
   if grep -Fqx -- \
-    'I:[H40 V50 HANDOFF] launching exact-H.40 isolated credential gate for user 0' \
+    'I:[OPLUS DECRYPT] credential handoff: launching exact-H.40 isolated credential gate for user 0' \
     "$all_strings"
   then
     adapter_version=v5-isolated
   fi
   check_string log_marker_activation \
-    'I:Oplus H.40 v4 hybrid activated; TWRP owns metadata mapping, OEM owns DE/CE'
+    'I:[OPLUS DECRYPT] hybrid activated; TWRP owns metadata mapping, OEM owns DE/CE'
   check_string log_marker_cryptoeng_ready \
-    'I:Oplus H.40 v4 ICryptoeng/default binderized get+ping ready after %d stable samples'
+    'I:[OPLUS DECRYPT] ICryptoeng/default binderized get+ping ready after %d stable samples'
   check_string log_marker_metadata_adopt \
-    'I:Oplus H.40 v4 hybrid adopting TWRP metadata mapping for %s'
+    'I:[OPLUS DECRYPT] hybrid adopting TWRP metadata mapping for %s'
   check_string log_marker_de_bypass \
-    'I:Oplus H.40 v4 preserving TWRP metadata mapping and bypassing generic DE/user discovery'
+    'I:[OPLUS DECRYPT] preserving TWRP metadata mapping and bypassing generic DE/user discovery'
   if [[ "$adapter_version" == v5-isolated ]]; then
     check_string log_marker_fatal \
-      'E:Oplus H.40 v5 hybrid adapter entered process-lifetime fatal state: %s'
+      'E:[OPLUS DECRYPT] adapter entered process-lifetime fatal state: %s'
     check_string log_marker_isolated_launch \
-      'I:[H40 V50 HANDOFF] launching exact-H.40 isolated credential gate for user 0'
+      'I:[OPLUS DECRYPT] credential handoff: launching exact-H.40 isolated credential gate for user 0'
     check_string log_marker_isolated_accept \
-      'I:[H40 V50 HANDOFF] OEM credential accepted; requesting modern SP unwrap'
+      'I:[OPLUS DECRYPT] credential handoff: OEM credential accepted; requesting modern SP unwrap'
     check_string log_marker_credential_success \
-      'I:[H40 V50 HANDOFF] modern user 0 CE postcondition satisfied'
-    reject_string old_inprocess_fatal \
-      'E:Oplus H.40 v4 hybrid adapter entered process-lifetime fatal state: %s'
+      'I:[OPLUS DECRYPT] credential handoff: modern user 0 CE postcondition satisfied'
   else
     check_string log_marker_fatal \
-      'E:Oplus H.40 v4 hybrid adapter entered process-lifetime fatal state: %s'
+      'E:[OPLUS DECRYPT] adapter entered process-lifetime fatal state: %s'
   fi
   check_string log_marker_metadata_failclosed \
-    'E:Oplus H.40 v4 TWRP metadata mapping failed after runtime activation; refusing FDE fallback'
+    'E:[OPLUS DECRYPT] TWRP metadata mapping failed after runtime activation; refusing FDE fallback'
   check_string log_marker_handoff_failclosed \
-    'E:Oplus H.40 v4 DE handoff failed after TWRP metadata mount (result=%d)'
+    'E:[OPLUS DECRYPT] DE handoff failed after TWRP metadata mount (result=%d)'
   reject_string old_oem_metadata_invocation \
-    'I:Oplus H.40 invoking metadata mount for %s'
+    'I:[OPLUS DECRYPT] invoking metadata mount for %s'
 else
   check_string log_marker_activation \
-    'I:Oplus H.40 v3 adapter activated; generic keystore2 fallback is now forbidden'
+    'I:[OPLUS DECRYPT] adapter activated; generic keystore2 fallback is now forbidden'
   check_string log_marker_cryptoeng_ready \
-    'I:Oplus H.40 v3 ICryptoeng/default binderized get+ping ready after %d stable samples'
+    'I:[OPLUS DECRYPT] ICryptoeng/default binderized get+ping ready after %d stable samples'
   check_string log_marker_de_bypass \
-    'I:Oplus H.40 v3 bypassing generic TWRP keystore2 DE/user discovery'
+    'I:[OPLUS DECRYPT] bypassing generic TWRP keystore2 DE/user discovery'
   check_string log_marker_fatal \
-    'E:Oplus H.40 v3 adapter entered process-lifetime fatal state: %s'
+    'E:[OPLUS DECRYPT] adapter entered process-lifetime fatal state: %s'
 fi
 
 # These postcondition strings are shared with the reviewed V3 state machine.
 check_string log_marker_policy \
-  'I:Oplus H.40 v3 FS_IOC_GET_ENCRYPTION_POLICY_EX version=%u for %s'
+  'I:[OPLUS DECRYPT] FS_IOC_GET_ENCRYPTION_POLICY_EX version=%u for %s'
 check_string log_marker_key_present \
-  'I:Oplus H.40 v3 FS_IOC_GET_ENCRYPTION_KEY_STATUS PRESENT for %s: status=%u'
+  'I:[OPLUS DECRYPT] FS_IOC_GET_ENCRYPTION_KEY_STATUS PRESENT for %s: status=%u'
 check_string log_marker_key_not_present \
-  'E:Oplus H.40 v3 FS_IOC_GET_ENCRYPTION_KEY_STATUS not PRESENT for %s: status=%u'
+  'E:[OPLUS DECRYPT] FS_IOC_GET_ENCRYPTION_KEY_STATUS not PRESENT for %s: status=%u'
 check_string log_marker_active_unavailable \
-  'E:Oplus H.40 active adapter returned unavailable; refusing generic credential fallback'
+  'E:[OPLUS DECRYPT] active adapter returned unavailable; refusing generic credential fallback'
 reject_string old_inprocess_no_lock_success \
-  'I:Oplus H.40 v3 no-lock user 0 CE postcondition satisfied'
+  'I:[OPLUS DECRYPT] no-lock user 0 CE postcondition satisfied'
 check_string log_marker_no_lock_deferred \
-  'I:[OPLUS V57 NOCREDENTIAL] deferring CE proof to parent recovery'
+  'I:[OPLUS DECRYPT] no credential: deferring CE proof to parent recovery'
 check_string log_marker_no_lock_handoff \
-  'I:[OPLUS V57 NOCREDENTIAL] requesting guarded parent-process CE install'
+  'I:[OPLUS DECRYPT] no credential: requesting guarded parent-process CE install'
 check_string log_marker_no_lock_parent_install \
-  'I:[OPLUS V57 NOCREDENTIAL] installing user 0 CE key in the recovery parent'
+  'I:[OPLUS DECRYPT] no credential: installing user 0 CE key in the recovery parent'
 check_string log_marker_no_lock_success \
-  'I:[OPLUS V57 NOCREDENTIAL] user 0 CE postcondition satisfied'
+  'I:[OPLUS DECRYPT] no credential: user 0 CE postcondition satisfied'
+check_string log_marker_retained_protector \
+  'I:[OPLUS DECRYPT] password state: OEM reports no active credential; treating retained .pwd as advisory metadata'
 if [[ "$adapter_version" != v5-isolated ]]; then
   check_string log_marker_credential_success \
-    'I:Oplus H.40 v3 user 0 CE postcondition satisfied'
+    'I:[OPLUS DECRYPT] user 0 CE postcondition satisfied'
 fi
 
 sha256sum "$recovery_elf" > "$report_dir/recovery-elf.sha256"

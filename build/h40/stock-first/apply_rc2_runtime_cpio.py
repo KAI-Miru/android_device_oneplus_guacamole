@@ -30,10 +30,10 @@ PRIVATE_VERIFY = (
     b"_Z21OplusCredentialVerifyNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEEi"
 )
 RECOVERY_MARKERS = (
-    b"[H40 PORTIDENTITY] using mounted dynamic system",
-    b"[H40 V50 HANDOFF] launching exact-H.40 isolated credential gate for user 0",
-    b"[H40 V51 PARENT] deriving and installing the accepted user 0 credential",
-    b"[OPLUS V56 LAYOUT]",
+    b"[OPLUS DECRYPT] system identity: using mounted dynamic system",
+    b"[OPLUS DECRYPT] credential handoff: launching exact-H.40 isolated credential gate for user 0",
+    b"[OPLUS DECRYPT] parent key install: deriving and installing the accepted user 0 credential",
+    b"[OPLUS DECRYPT] CE layout:",
     b"direct-aes-minimal",
     b"direct-aes-legacy-none",
 )

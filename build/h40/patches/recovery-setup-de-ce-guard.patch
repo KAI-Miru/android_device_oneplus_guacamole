@@ -207,7 +207,7 @@ index 15b4477..9f34711 100644
 +                                       void* raw_get_password_type,
 +                                       void* raw_mount_metadata) {
 +    if (!VerifyOemFileIdentity()) {
-+        LOGERR("[OPLUS V59 SETUPGUARD] exact stock OEM library identity mismatch\n");
++        LOGERR("[OPLUS DECRYPT] setup guard: exact stock OEM library identity mismatch\n");
 +        return false;
 +    }
 +
@@ -219,14 +219,14 @@ index 15b4477..9f34711 100644
 +        !SymbolHasExpectedOrigin(raw_get_password_type, library_info.dli_fbase,
 +                                 kGetPasswordTypeSymbolOffset) ||
 +        !SymbolComesFromOemLibrary(raw_mount_metadata, library_info.dli_fbase)) {
-+        LOGERR("[OPLUS V59 SETUPGUARD] OEM symbol origin mismatch\n");
++        LOGERR("[OPLUS DECRYPT] setup guard: OEM symbol origin mismatch\n");
 +        return false;
 +    }
 +
 +    const std::uintptr_t base =
 +            reinterpret_cast<std::uintptr_t>(library_info.dli_fbase);
 +    if (!SetupDeCeOpcodeContextMatches(base, false)) {
-+        LOGERR("[OPLUS V59 SETUPGUARD] setup_de_ce opcode context mismatch\n");
++        LOGERR("[OPLUS DECRYPT] setup guard: setup_de_ce opcode context mismatch\n");
 +        return false;
 +    }
 +
@@ -241,7 +241,7 @@ index 15b4477..9f34711 100644
 +            ~page_mask;
 +    if (end <= start || mprotect(reinterpret_cast<void*>(start), end - start,
 +                                 PROT_READ | PROT_WRITE) != 0) {
-+        LOGERR("[OPLUS V59 SETUPGUARD] cannot open exact OEM code page: %s\n",
++        LOGERR("[OPLUS DECRYPT] setup guard: cannot open exact OEM code page: %s\n",
 +               strerror(errno));
 +        return false;
 +    }
@@ -251,15 +251,15 @@ index 15b4477..9f34711 100644
 +                            reinterpret_cast<char*>(end));
 +    if (mprotect(reinterpret_cast<void*>(start), end - start,
 +                 PROT_READ | PROT_EXEC) != 0) {
-+        LOGERR("[OPLUS V59 SETUPGUARD] cannot restore OEM code protections: %s\n",
++        LOGERR("[OPLUS DECRYPT] setup guard: cannot restore OEM code protections: %s\n",
 +               strerror(errno));
 +        return false;
 +    }
 +    if (!SetupDeCeOpcodeContextMatches(base, true)) {
-+        LOGERR("[OPLUS V59 SETUPGUARD] patched setup_de_ce verification failed\n");
++        LOGERR("[OPLUS DECRYPT] setup guard: patched setup_de_ce verification failed\n");
 +        return false;
 +    }
-+    LOGINFO("[OPLUS V59 SETUPGUARD] disabled exact passwordless-only legacy CE branch\n");
++    LOGINFO("[OPLUS DECRYPT] setup guard: disabled exact passwordless-only legacy CE branch\n");
 +    return true;
 +}
 +
@@ -270,7 +270,7 @@ index 15b4477..9f34711 100644
      void* symbol = dlsym(handle, name);
      const char* error = dlerror();
 @@ -658,27 +874,42 @@ T FindSymbol(void* handle, const char* name) {
-         LOGERR("Oplus H.40 decrypt: missing symbol %s: %s\n", name, error);
+         LOGERR("[OPLUS DECRYPT] missing symbol %s: %s\n", name, error);
          return nullptr;
      }
 +    if (raw_symbol != nullptr) *raw_symbol = symbol;
@@ -284,7 +284,7 @@ index 15b4477..9f34711 100644
 +        loaded.handle = dlopen(credential_protocol::kOemLibraryPath,
 +                               RTLD_NOW | RTLD_LOCAL);
          if (loaded.handle == nullptr) {
-             LOGINFO("Oplus H.40 decrypt unavailable: %s\n", dlerror());
+             LOGINFO("[OPLUS DECRYPT] unavailable: %s\n", dlerror());
              return loaded;
          }
 -        loaded.setup_de_ce = FindSymbol<SetupDeCeFn>(loaded.handle, kSetupDeCeSymbol);
@@ -313,6 +313,6 @@ index 15b4477..9f34711 100644
 +            loaded = {};
 +            return loaded;
 +        }
-         LOGINFO("Oplus H.40 decrypt ABI loaded\n");
+         LOGINFO("[OPLUS DECRYPT] ABI loaded\n");
          return loaded;
      }();

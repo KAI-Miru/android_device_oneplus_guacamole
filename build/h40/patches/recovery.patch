@@ -197,12 +197,12 @@ index 0000000000000000000000000000000000000000..7c0520140a74a763a944e7bdda28aa50
 +void KillAndReap(pid_t pid) {
 +    if (pid <= 0) return;
 +    if (kill(pid, SIGKILL) != 0 && errno != ESRCH) {
-+        LOGERR("[H40 V50 HELPER] failed to kill helper pid=%d: %s\n", pid,
++        LOGERR("[OPLUS DECRYPT] credential helper: failed to kill helper pid=%d: %s\n", pid,
 +               strerror(errno));
 +    }
 +    int status = 0;
 +    if (!WaitForChild(pid, kExitTimeoutMs, &status)) {
-+        LOGERR("[H40 V50 HELPER] helper pid=%d did not reap after SIGKILL; "
++        LOGERR("[OPLUS DECRYPT] credential helper: helper pid=%d did not reap after SIGKILL; "
 +               "continuing in fatal adapter state\n",
 +               pid);
 +    }
@@ -221,7 +221,7 @@ index 0000000000000000000000000000000000000000..7c0520140a74a763a944e7bdda28aa50
 +    const std::string source = "/proc/" + std::to_string(pid) + "/maps";
 +    std::ifstream input(source);
 +    if (!input.is_open() || oem_mapping == nullptr) {
-+        LOGERR("[H40 V50 HELPER] unable to inspect helper maps for attempt=%llu\n",
++        LOGERR("[OPLUS DECRYPT] credential helper: unable to inspect helper maps for attempt=%llu\n",
 +               static_cast<unsigned long long>(attempt_id));
 +        return false;
 +    }
@@ -253,7 +253,7 @@ index 0000000000000000000000000000000000000000..7c0520140a74a763a944e7bdda28aa50
 +            char permissions[5] = {};
 +            if (std::sscanf(line.c_str(), "%llx-%llx %4s", &start, &end,
 +                            permissions) != 3 || start >= end) {
-+                LOGERR("[H40 V50 HELPER] malformed OEM map attempt=%llu\n",
++                LOGERR("[OPLUS DECRYPT] credential helper: malformed OEM map attempt=%llu\n",
 +                       static_cast<unsigned long long>(attempt_id));
 +                return false;
 +            }
@@ -268,7 +268,7 @@ index 0000000000000000000000000000000000000000..7c0520140a74a763a944e7bdda28aa50
 +    if (!saw_oem || executable_intervals.empty() || !saw_stock_libcxx ||
 +        !saw_stock_libcrypto || !saw_helper || saw_private_runtime ||
 +        oem_start == std::numeric_limits<std::uint64_t>::max()) {
-+        LOGERR("[H40 V50 HELPER] stock namespace proof failed attempt=%llu "
++        LOGERR("[OPLUS DECRYPT] credential helper: stock namespace proof failed attempt=%llu "
 +               "helper=%d oem=%d executable=%d stockLibcxx=%d "
 +               "stockLibcrypto=%d privateRuntime=%d\n",
 +               static_cast<unsigned long long>(attempt_id), saw_helper, saw_oem,
@@ -286,7 +286,7 @@ index 0000000000000000000000000000000000000000..7c0520140a74a763a944e7bdda28aa50
 +    for (const OemMapping::ExecutableInterval& interval : executable_intervals) {
 +        if (interval.start < oem_start || interval.end <= interval.start ||
 +            (previous_end != 0 && interval.start < previous_end)) {
-+            LOGERR("[H40 V50 HELPER] invalid OEM executable-map layout attempt=%llu\n",
++            LOGERR("[OPLUS DECRYPT] credential helper: invalid OEM executable-map layout attempt=%llu\n",
 +                   static_cast<unsigned long long>(attempt_id));
 +            return false;
 +        }
@@ -294,7 +294,7 @@ index 0000000000000000000000000000000000000000..7c0520140a74a763a944e7bdda28aa50
 +    }
 +    oem_mapping->load_base = oem_start;
 +    oem_mapping->executable_intervals = std::move(executable_intervals);
-+    LOGINFO("[H40 V50 HELPER] stock-runtime maps verified for attempt=%llu pid=%d\n",
++    LOGINFO("[OPLUS DECRYPT] credential helper: stock-runtime maps verified for attempt=%llu pid=%d\n",
 +            static_cast<unsigned long long>(attempt_id), pid);
 +    return true;
 +}
@@ -328,7 +328,7 @@ index 0000000000000000000000000000000000000000..7c0520140a74a763a944e7bdda28aa50
 +                                  crash.link_register_offset, mapping);
 +    const std::uint64_t lr_offset = lr_in_oem ? crash.link_register_offset : 0;
 +
-+    LOGERR("[H40 V50 CRASH] helper pid=%d tid=%u signal=%d code=%d stage=%u "
++    LOGERR("[OPLUS DECRYPT] credential helper crash: helper pid=%d tid=%u signal=%d code=%d stage=%u "
 +           "pcInOem=%d pcOffset=0x%llx lrInOem=%d lrOffset=0x%llx\n",
 +           pid, crash.crashing_tid, crash.signal_number, crash.signal_code, crash.stage,
 +           pc_in_oem, static_cast<unsigned long long>(pc_offset), lr_in_oem,
@@ -380,7 +380,7 @@ index 0000000000000000000000000000000000000000..7c0520140a74a763a944e7bdda28aa50
 +                                               int expected_password_type) {
 +    if (credential.empty() || credential.size() > protocol::kMaxCredentialBytes ||
 +        expected_password_type < 1 || expected_password_type > 4) {
-+        LOGERR("[H40 V50 HELPER] refusing malformed credential parameters\n");
++        LOGERR("[OPLUS DECRYPT] credential helper: refusing malformed credential parameters\n");
 +        return IsolatedVerifyResult::kFatalFailure;
 +    }
 +
@@ -388,7 +388,7 @@ index 0000000000000000000000000000000000000000..7c0520140a74a763a944e7bdda28aa50
 +
 +    int sockets[2] = {-1, -1};
 +    if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sockets) != 0) {
-+        LOGERR("[H40 V50 HELPER] socketpair failed: %s\n", strerror(errno));
++        LOGERR("[OPLUS DECRYPT] credential helper: socketpair failed: %s\n", strerror(errno));
 +        return IsolatedVerifyResult::kFatalFailure;
 +    }
 +    ScopedFd parent_socket(sockets[0]);
@@ -396,7 +396,7 @@ index 0000000000000000000000000000000000000000..7c0520140a74a763a944e7bdda28aa50
 +
 +    const int child_socket = fcntl(original_child_socket.get(), F_DUPFD_CLOEXEC, 64);
 +    if (child_socket < 0) {
-+        LOGERR("[H40 V50 HELPER] child fd duplication failed: %s\n", strerror(errno));
++        LOGERR("[OPLUS DECRYPT] credential helper: child fd duplication failed: %s\n", strerror(errno));
 +        return IsolatedVerifyResult::kFatalFailure;
 +    }
 +    ScopedFd spawned_socket(child_socket);
@@ -404,7 +404,7 @@ index 0000000000000000000000000000000000000000..7c0520140a74a763a944e7bdda28aa50
 +    posix_spawn_file_actions_t actions;
 +    int spawn_error = posix_spawn_file_actions_init(&actions);
 +    if (spawn_error != 0) {
-+        LOGERR("[H40 V50 HELPER] spawn action initialization failed: %s\n",
++        LOGERR("[OPLUS DECRYPT] credential helper: spawn action initialization failed: %s\n",
 +               strerror(spawn_error));
 +        return IsolatedVerifyResult::kFatalFailure;
 +    }
@@ -415,7 +415,7 @@ index 0000000000000000000000000000000000000000..7c0520140a74a763a944e7bdda28aa50
 +    }
 +    if (spawn_error != 0) {
 +        posix_spawn_file_actions_destroy(&actions);
-+        LOGERR("[H40 V50 HELPER] spawn action setup failed: %s\n", strerror(spawn_error));
++        LOGERR("[OPLUS DECRYPT] credential helper: spawn action setup failed: %s\n", strerror(spawn_error));
 +        return IsolatedVerifyResult::kFatalFailure;
 +    }
 +
@@ -423,7 +423,7 @@ index 0000000000000000000000000000000000000000..7c0520140a74a763a944e7bdda28aa50
 +    spawn_error = posix_spawnattr_init(&attributes);
 +    if (spawn_error != 0) {
 +        posix_spawn_file_actions_destroy(&actions);
-+        LOGERR("[H40 V50 HELPER] spawn attribute initialization failed: %s\n",
++        LOGERR("[OPLUS DECRYPT] credential helper: spawn attribute initialization failed: %s\n",
 +               strerror(spawn_error));
 +        return IsolatedVerifyResult::kFatalFailure;
 +    }
@@ -436,7 +436,7 @@ index 0000000000000000000000000000000000000000..7c0520140a74a763a944e7bdda28aa50
 +    if (spawn_error != 0) {
 +        posix_spawnattr_destroy(&attributes);
 +        posix_spawn_file_actions_destroy(&actions);
-+        LOGERR("[H40 V50 HELPER] spawn signal-mask setup failed: %s\n",
++        LOGERR("[OPLUS DECRYPT] credential helper: spawn signal-mask setup failed: %s\n",
 +               strerror(spawn_error));
 +        return IsolatedVerifyResult::kFatalFailure;
 +    }
@@ -453,7 +453,7 @@ index 0000000000000000000000000000000000000000..7c0520140a74a763a944e7bdda28aa50
 +    posix_spawnattr_destroy(&attributes);
 +    posix_spawn_file_actions_destroy(&actions);
 +    if (spawn_error != 0) {
-+        LOGERR("[H40 V50 HELPER] posix_spawn failed: %s\n", strerror(spawn_error));
++        LOGERR("[OPLUS DECRYPT] credential helper: posix_spawn failed: %s\n", strerror(spawn_error));
 +        return IsolatedVerifyResult::kFatalFailure;
 +    }
 +    close(spawned_socket.release());
@@ -465,7 +465,7 @@ index 0000000000000000000000000000000000000000..7c0520140a74a763a944e7bdda28aa50
 +    hello.user_id = 0;
 +    hello.expected_password_type = expected_password_type;
 +    if (!SendPacket(parent_socket.get(), &hello, sizeof(hello))) {
-+        LOGERR("[H40 V50 HELPER] failed to send hello attempt=%llu: %s\n",
++        LOGERR("[OPLUS DECRYPT] credential helper: failed to send hello attempt=%llu: %s\n",
 +               static_cast<unsigned long long>(attempt_id), strerror(errno));
 +        KillAndReap(pid);
 +        return IsolatedVerifyResult::kFatalFailure;
@@ -489,7 +489,7 @@ index 0000000000000000000000000000000000000000..7c0520140a74a763a944e7bdda28aa50
 +        IsReply(packet, packet_size, attempt_id, &reply) &&
 +        reply.header.type ==
 +                static_cast<std::uint16_t>(protocol::FrameType::kPreflightFailed)) {
-+        LOGERR("[H40 V50 HELPER] preflight failed attempt=%llu reason=%d stage=%u\n",
++        LOGERR("[OPLUS DECRYPT] credential helper: preflight failed attempt=%llu reason=%d stage=%u\n",
 +               static_cast<unsigned long long>(attempt_id), reply.result, reply.stage);
 +        int status = 0;
 +        if (!WaitForChild(pid, kExitTimeoutMs, &status)) KillAndReap(pid);
@@ -501,7 +501,7 @@ index 0000000000000000000000000000000000000000..7c0520140a74a763a944e7bdda28aa50
 +        reply.result != expected_password_type ||
 +        reply.stage != static_cast<std::uint32_t>(protocol::Stage::kDePrepared) ||
 +        reply.flags != protocol::kReplyOemIdentityVerified) {
-+        LOGERR("[H40 V50 HELPER] invalid/missing READY attempt=%llu status=%d\n",
++        LOGERR("[OPLUS DECRYPT] credential helper: invalid/missing READY attempt=%llu status=%d\n",
 +               static_cast<unsigned long long>(attempt_id), static_cast<int>(receive));
 +        KillAndReap(pid);
 +        return IsolatedVerifyResult::kFatalFailure;
@@ -528,7 +528,7 @@ index 0000000000000000000000000000000000000000..7c0520140a74a763a944e7bdda28aa50
 +                                             credential_packet.size());
 +    SecureWipe(credential_packet.data(), credential_packet.size());
 +    if (!credential_sent) {
-+        LOGERR("[H40 V50 HELPER] failed to send credential attempt=%llu: %s\n",
++        LOGERR("[OPLUS DECRYPT] credential helper: failed to send credential attempt=%llu: %s\n",
 +               static_cast<unsigned long long>(attempt_id), strerror(errno));
 +        KillAndReap(pid);
 +        return IsolatedVerifyResult::kFatalFailure;
@@ -545,7 +545,7 @@ index 0000000000000000000000000000000000000000..7c0520140a74a763a944e7bdda28aa50
 +        packet_size = 0;
 +        receive = ReceivePacket(parent_socket.get(), verify_deadline, &packet, &packet_size);
 +        if (receive == ReceiveStatus::kTimeout) {
-+            LOGERR("[H40 V50 HELPER] timeout attempt=%llu verifyStarted=%d\n",
++            LOGERR("[OPLUS DECRYPT] credential helper: timeout attempt=%llu verifyStarted=%d\n",
 +                   static_cast<unsigned long long>(attempt_id), verify_started);
 +            KillAndReap(pid);
 +            return IsolatedVerifyResult::kFatalFailure;
@@ -553,7 +553,7 @@ index 0000000000000000000000000000000000000000..7c0520140a74a763a944e7bdda28aa50
 +        if (receive != ReceiveStatus::kPacket) {
 +            int status = 0;
 +            const bool reaped = WaitForChild(pid, kExitTimeoutMs, &status);
-+            LOGERR("[H40 V50 HELPER] channel closed attempt=%llu verifyStarted=%d "
++            LOGERR("[OPLUS DECRYPT] credential helper: channel closed attempt=%llu verifyStarted=%d "
 +                   "reaped=%d status=%d\n",
 +                   static_cast<unsigned long long>(attempt_id), verify_started, reaped, status);
 +            if (!reaped) KillAndReap(pid);
@@ -568,7 +568,7 @@ index 0000000000000000000000000000000000000000..7c0520140a74a763a944e7bdda28aa50
 +            return IsolatedVerifyResult::kFatalFailure;
 +        }
 +        if (!IsReply(packet, packet_size, attempt_id, &reply)) {
-+            LOGERR("[H40 V50 HELPER] malformed reply attempt=%llu size=%zu\n",
++            LOGERR("[OPLUS DECRYPT] credential helper: malformed reply attempt=%llu size=%zu\n",
 +                   static_cast<unsigned long long>(attempt_id), packet_size);
 +            KillAndReap(pid);
 +            return IsolatedVerifyResult::kFatalFailure;
@@ -577,7 +577,7 @@ index 0000000000000000000000000000000000000000..7c0520140a74a763a944e7bdda28aa50
 +        const bool clean_diagnostics =
 +                reply.flags == protocol::kReplyOemIdentityVerified;
 +        if (!clean_diagnostics) {
-+            LOGERR("[H40 V50 HELPER] invalid reply diagnostics attempt=%llu type=%u\n",
++            LOGERR("[OPLUS DECRYPT] credential helper: invalid reply diagnostics attempt=%llu type=%u\n",
 +                   static_cast<unsigned long long>(attempt_id), reply.header.type);
 +            KillAndReap(pid);
 +            return IsolatedVerifyResult::kFatalFailure;
@@ -589,7 +589,7 @@ index 0000000000000000000000000000000000000000..7c0520140a74a763a944e7bdda28aa50
 +            reply.result == 0 &&
 +            reply.stage == static_cast<std::uint32_t>(protocol::Stage::kVerifyStarted)) {
 +            verify_started = true;
-+            LOGINFO("[H40 V50 HELPER] OEM verify started attempt=%llu\n",
++            LOGINFO("[OPLUS DECRYPT] credential helper: OEM verify started attempt=%llu\n",
 +                    static_cast<unsigned long long>(attempt_id));
 +            continue;
 +        }
@@ -616,7 +616,7 @@ index 0000000000000000000000000000000000000000..7c0520140a74a763a944e7bdda28aa50
 +            have_terminal_reply = true;
 +            continue;
 +        }
-+        LOGERR("[H40 V50 HELPER] unexpected reply type=%u attempt=%llu\n",
++        LOGERR("[OPLUS DECRYPT] credential helper: unexpected reply type=%u attempt=%llu\n",
 +               reply.header.type, static_cast<unsigned long long>(attempt_id));
 +        KillAndReap(pid);
 +        return IsolatedVerifyResult::kFatalFailure;
@@ -624,28 +624,28 @@ index 0000000000000000000000000000000000000000..7c0520140a74a763a944e7bdda28aa50
 +
 +    int child_status = 0;
 +    if (!WaitForChild(pid, kExitTimeoutMs, &child_status)) {
-+        LOGERR("[H40 V50 HELPER] helper failed to exit attempt=%llu\n",
++        LOGERR("[OPLUS DECRYPT] credential helper: helper failed to exit attempt=%llu\n",
 +               static_cast<unsigned long long>(attempt_id));
 +        KillAndReap(pid);
 +        return IsolatedVerifyResult::kFatalFailure;
 +    }
 +    if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
-+        LOGERR("[H40 V50 HELPER] abnormal exit attempt=%llu status=%d terminal=%u\n",
++        LOGERR("[OPLUS DECRYPT] credential helper: abnormal exit attempt=%llu status=%d terminal=%u\n",
 +               static_cast<unsigned long long>(attempt_id), child_status,
 +               static_cast<unsigned int>(terminal_type));
 +        return IsolatedVerifyResult::kFatalFailure;
 +    }
 +    if (terminal_type == protocol::FrameType::kAccepted && verify_started) {
-+        LOGINFO("[H40 V50 HELPER] credential accepted attempt=%llu\n",
++        LOGINFO("[OPLUS DECRYPT] credential helper: credential accepted attempt=%llu\n",
 +                static_cast<unsigned long long>(attempt_id));
 +        return IsolatedVerifyResult::kAccepted;
 +    }
 +    if (terminal_type == protocol::FrameType::kRejected && verify_started) {
-+        LOGINFO("[H40 V50 HELPER] OEM returned -1/non-acceptance attempt=%llu\n",
++        LOGINFO("[OPLUS DECRYPT] credential helper: OEM returned -1/non-acceptance attempt=%llu\n",
 +                static_cast<unsigned long long>(attempt_id));
 +        return IsolatedVerifyResult::kRejected;
 +    }
-+    LOGERR("[H40 V50 HELPER] fatal terminal state=%u result=%d stage=%u "
++    LOGERR("[OPLUS DECRYPT] credential helper: fatal terminal state=%u result=%d stage=%u "
 +           "verifyStarted=%d attempt=%llu\n",
 +           static_cast<unsigned int>(terminal_type), terminal_result, terminal_stage,
 +           verify_started,
@@ -692,7 +692,7 @@ index 0000000000000000000000000000000000000000..74b30a57c05de7b9537dead5a736ec19
 --- /dev/null
 +++ b/oplus_h40_credential_helper.cpp
 @@ -0,0 +1,764 @@
-+#define LOG_TAG "H40Credential50"
++#define LOG_TAG "OplusDecrypt"
 +
 +#include "oplus_h40_credential_protocol.hpp"
 +
@@ -1711,30 +1711,30 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +    key_serial_t keyring =
 +            keyctl_search(KEY_SPEC_SESSION_KEYRING, "keyring", kName, 0);
 +    if (keyring >= 0) {
-+        LOGINFO("[H40 FSCRYPTKEYRING] existing: id=%d\n", static_cast<int>(keyring));
++        LOGINFO("[OPLUS DECRYPT] keyring: existing: id=%d\n", static_cast<int>(keyring));
 +        return true;
 +    }
 +    if (errno != ENOKEY) {
-+        LOGERR("[H40 FSCRYPTKEYRING] search failed: %s\n", strerror(errno));
++        LOGERR("[OPLUS DECRYPT] keyring: search failed: %s\n", strerror(errno));
 +        return false;
 +    }
 +
 +    errno = 0;
 +    keyring = add_key("keyring", kName, nullptr, 0, KEY_SPEC_SESSION_KEYRING);
 +    if (keyring >= 0) {
-+        LOGINFO("[H40 FSCRYPTKEYRING] created: id=%d\n", static_cast<int>(keyring));
++        LOGINFO("[OPLUS DECRYPT] keyring: created: id=%d\n", static_cast<int>(keyring));
 +        return true;
 +    }
 +
 +    const int creation_errno = errno;
 +    keyring = keyctl_search(KEY_SPEC_SESSION_KEYRING, "keyring", kName, 0);
 +    if (keyring >= 0) {
-+        LOGINFO("[H40 FSCRYPTKEYRING] appeared concurrently: id=%d\n",
++        LOGINFO("[OPLUS DECRYPT] keyring: appeared concurrently: id=%d\n",
 +                static_cast<int>(keyring));
 +        return true;
 +    }
 +
-+    LOGERR("[H40 FSCRYPTKEYRING] creation failed: %s\n", strerror(creation_errno));
++    LOGERR("[OPLUS DECRYPT] keyring: creation failed: %s\n", strerror(creation_errno));
 +    return false;
 +}
 +
@@ -1751,14 +1751,14 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +
 +bool SetProperty(const char* name, const char* value) {
 +    if (property_set(name, value) == 0) return true;
-+    LOGERR("Oplus H.40 decrypt: failed to set %s=%s\n", name, value);
++    LOGERR("[OPLUS DECRYPT] failed to set %s=%s\n", name, value);
 +    return false;
 +}
 +
 +bool RunResetprop(const char* name, const char* value) {
 +    const pid_t pid = fork();
 +    if (pid < 0) {
-+        LOGERR("[H40 PORTIDENTITY] fork failed for %s: %s\n", name, strerror(errno));
++        LOGERR("[OPLUS DECRYPT] system identity: fork failed for %s: %s\n", name, strerror(errno));
 +        return false;
 +    }
 +    if (pid == 0) {
@@ -1769,17 +1769,17 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +
 +    int status = 0;
 +    if (waitpid(pid, &status, 0) != pid) {
-+        LOGERR("[H40 PORTIDENTITY] waitpid failed for %s: %s\n", name, strerror(errno));
++        LOGERR("[OPLUS DECRYPT] system identity: waitpid failed for %s: %s\n", name, strerror(errno));
 +        return false;
 +    }
 +    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-+        LOGERR("[H40 PORTIDENTITY] resetprop failed for %s, status=%d\n", name, status);
++        LOGERR("[OPLUS DECRYPT] system identity: resetprop failed for %s, status=%d\n", name, status);
 +        return false;
 +    }
 +
 +    const std::string actual = ReadProperty(name);
 +    if (actual != value) {
-+        LOGERR("[H40 PORTIDENTITY] resetprop verification failed for %s: got=%s expected=%s\n",
++        LOGERR("[OPLUS DECRYPT] system identity: resetprop verification failed for %s: got=%s expected=%s\n",
 +               name, actual.c_str(), value);
 +        return false;
 +    }
@@ -1862,10 +1862,10 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +    if (!ReadBuildPropValue(path, release_keys, release, &release_key)) return false;
 +    if (!ReadBuildPropValue(path, patch_keys, patch, &patch_key)) return false;
 +    if (!IsValidAndroidRelease(*release) || !IsValidSecurityPatch(*patch)) {
-+        LOGERR("[H40 PORTIDENTITY] invalid identity in %s\n", path.c_str());
++        LOGERR("[OPLUS DECRYPT] system identity: invalid identity in %s\n", path.c_str());
 +        return false;
 +    }
-+    LOGINFO("[H40 PORTIDENTITY] property source: path=%s releaseKey=%s patchKey=%s\n",
++    LOGINFO("[OPLUS DECRYPT] system identity: property source: path=%s releaseKey=%s patchKey=%s\n",
 +            path.c_str(), release_key.c_str(), patch_key.c_str());
 +    return true;
 +}
@@ -1972,17 +1972,17 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +        if (slot == "a" || slot == "b") slot_suffix = "_" + slot;
 +    }
 +    if (slot_suffix != "_a" && slot_suffix != "_b") {
-+        LOGERR("[H40 PORTIDENTITY] unable to determine active system slot: suffix=%s\n",
++        LOGERR("[OPLUS DECRYPT] system identity: unable to determine active system slot: suffix=%s\n",
 +               slot_suffix.c_str());
 +        return false;
 +    }
 +
 +    MountedSystem existing;
 +    if (FindMountedDynamicSystem(&existing)) {
-+        LOGINFO("[H40 PORTIDENTITY] using mounted dynamic system: source=%s mount=%s fs=%s\n",
++        LOGINFO("[OPLUS DECRYPT] system identity: using mounted dynamic system: source=%s mount=%s fs=%s\n",
 +                existing.source.c_str(), existing.mount_point.c_str(), existing.fs_type.c_str());
 +        if (ReadIdentityFromRoot(existing.mount_point, release, patch)) return true;
-+        LOGERR("[H40 PORTIDENTITY] mounted dynamic system has no reliable release/SPL pair\n");
++        LOGERR("[OPLUS DECRYPT] system identity: mounted dynamic system has no reliable release/SPL pair\n");
 +    }
 +
 +    const std::vector<std::string> blocks = {
@@ -1993,7 +1993,7 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +    };
 +    constexpr char kMountPoint[] = "/tmp/h40-installed-system";
 +    if (mkdir(kMountPoint, 0700) != 0 && errno != EEXIST) {
-+        LOGERR("[H40 PORTIDENTITY] mkdir failed: %s\n", strerror(errno));
++        LOGERR("[OPLUS DECRYPT] system identity: mkdir failed: %s\n", strerror(errno));
 +        return false;
 +    }
 +
@@ -2016,25 +2016,25 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +        last_error = errno;
 +    }
 +    if (!mounted_type) {
-+        LOGERR("[H40 PORTIDENTITY] read-only system mount failed for slot %s: %s\n",
++        LOGERR("[OPLUS DECRYPT] system identity: read-only system mount failed for slot %s: %s\n",
 +               slot_suffix.c_str(), strerror(last_error));
 +        rmdir(kMountPoint);
 +        return false;
 +    }
 +
-+    LOGINFO("[H40 PORTIDENTITY] installed system mounted read-only: slot=%s block=%s fs=%s\n",
++    LOGINFO("[OPLUS DECRYPT] system identity: installed system mounted read-only: slot=%s block=%s fs=%s\n",
 +            slot_suffix.c_str(), mounted_block.c_str(), mounted_type);
 +
 +    const bool found = ReadIdentityFromRoot(kMountPoint, release, patch);
 +
 +    if (umount(kMountPoint) != 0) {
-+        LOGERR("[H40 PORTIDENTITY] failed to unmount installed system: %s\n", strerror(errno));
++        LOGERR("[OPLUS DECRYPT] system identity: failed to unmount installed system: %s\n", strerror(errno));
 +        return false;
 +    }
 +    rmdir(kMountPoint);
 +
 +    if (!found) {
-+        LOGERR("[H40 PORTIDENTITY] no reliable release/SPL pair found in installed system\n");
++        LOGERR("[OPLUS DECRYPT] system identity: no reliable release/SPL pair found in installed system\n");
 +        return false;
 +    }
 +    return true;
@@ -2043,7 +2043,7 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +bool PrepareKeymasterBuildIdentity() {
 +    const std::string keymaster_state = ReadProperty("init.svc.keymaster-4-0");
 +    if (keymaster_state == "running" || keymaster_state == "restarting") {
-+        LOGERR("[H40 PORTIDENTITY] refusing late identity change: keymaster-4-0=%s\n",
++        LOGERR("[OPLUS DECRYPT] system identity: refusing late identity change: keymaster-4-0=%s\n",
 +               keymaster_state.c_str());
 +        return false;
 +    }
@@ -2054,11 +2054,11 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +
 +    const std::string vendor_patch = ReadProperty("ro.vendor.build.security_patch");
 +    if (!IsValidSecurityPatch(vendor_patch)) {
-+        LOGERR("[H40 PORTIDENTITY] recovery vendor patch missing/invalid\n");
++        LOGERR("[OPLUS DECRYPT] system identity: recovery vendor patch missing/invalid\n");
 +        return false;
 +    }
 +
-+    LOGINFO("[H40 PORTIDENTITY] source: release=%s systemPatch=%s vendorPatch=%s\n",
++    LOGINFO("[OPLUS DECRYPT] system identity: source: release=%s systemPatch=%s vendorPatch=%s\n",
 +            system_release.c_str(), system_patch.c_str(), vendor_patch.c_str());
 +
 +    if (!RunResetprop("ro.build.version.release", system_release.c_str())) return false;
@@ -2068,16 +2068,16 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +    const std::string after_patch = ReadProperty("ro.build.version.security_patch");
 +    const std::string after_vendor_patch = ReadProperty("ro.vendor.build.security_patch");
 +    if (after_release != system_release || after_patch != system_patch) {
-+        LOGERR("[H40 PORTIDENTITY] final identity verification failed\n");
++        LOGERR("[OPLUS DECRYPT] system identity: final identity verification failed\n");
 +        return false;
 +    }
 +    if (after_vendor_patch != vendor_patch) {
-+        LOGERR("[H40 PORTIDENTITY] vendor patch changed unexpectedly: before=%s after=%s\n",
++        LOGERR("[OPLUS DECRYPT] system identity: vendor patch changed unexpectedly: before=%s after=%s\n",
 +               vendor_patch.c_str(), after_vendor_patch.c_str());
 +        return false;
 +    }
 +
-+    LOGINFO("[H40 PORTIDENTITY] applied: release=%s systemPatch=%s\n",
++    LOGINFO("[OPLUS DECRYPT] system identity: applied: release=%s systemPatch=%s\n",
 +            after_release.c_str(), after_patch.c_str());
 +    return true;
 +}
@@ -2085,7 +2085,7 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +Result FailActive(const char* reason) {
 +    RuntimeState& state = GetRuntimeState();
 +    state.phase = Phase::kFatal;
-+    LOGERR("Oplus H.40 v5 hybrid adapter entered process-lifetime fatal state: %s\n", reason);
++    LOGERR("[OPLUS DECRYPT] adapter entered process-lifetime fatal state: %s\n", reason);
 +    return Result::kFatalFailure;
 +}
 +
@@ -2108,10 +2108,10 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +        usleep(kServicePollIntervalUs);
 +    }
 +
-+    LOGERR("Oplus H.40 decrypt: timed out waiting for %s services\n", phase);
++    LOGERR("[OPLUS DECRYPT] timed out waiting for %s services\n", phase);
 +    for (const char* service : services) {
 +        const std::string state = ReadProperty(std::string("init.svc.") + service);
-+        LOGERR("Oplus H.40 decrypt: init.svc.%s=%s\n", service, state.c_str());
++        LOGERR("[OPLUS DECRYPT] init.svc.%s=%s\n", service, state.c_str());
 +    }
 +    return false;
 +}
@@ -2121,7 +2121,7 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +        if (ReadProperty("init.svc.gatekeeperd") == "stopped") return true;
 +        usleep(kServicePollIntervalUs);
 +    }
-+    LOGERR("Oplus H.40 decrypt: gatekeeperd did not stop before metadata mapping (state=%s)\n",
++    LOGERR("[OPLUS DECRYPT] gatekeeperd did not stop before metadata mapping (state=%s)\n",
 +           ReadProperty("init.svc.gatekeeperd").c_str());
 +    return false;
 +}
@@ -2131,7 +2131,7 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +        if (ReadProperty(name) == expected) return true;
 +        usleep(kServicePollIntervalUs);
 +    }
-+    LOGERR("Oplus H.40 decrypt: timed out waiting for %s (%s=%s, expected %s)\n",
++    LOGERR("[OPLUS DECRYPT] timed out waiting for %s (%s=%s, expected %s)\n",
 +           phase, name, ReadProperty(name).c_str(), expected);
 +    return false;
 +}
@@ -2139,7 +2139,7 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +bool WaitForCryptoengEndpoint() {
 +    android::sp<IServiceManager> manager = defaultServiceManager();
 +    if (manager == nullptr) {
-+        LOGERR("Oplus H.40 decrypt: no binderized HIDL service manager\n");
++        LOGERR("[OPLUS DECRYPT] no binderized HIDL service manager\n");
 +        return false;
 +    }
 +
@@ -2166,7 +2166,7 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +
 +        if (endpoint_ready) {
 +            if (++stable_polls >= kStableServicePolls) {
-+                LOGINFO("Oplus H.40 v4 ICryptoeng/default binderized get+ping ready after %d stable samples\n",
++                LOGINFO("[OPLUS DECRYPT] ICryptoeng/default binderized get+ping ready after %d stable samples\n",
 +                        kStableServicePolls);
 +                return true;
 +            }
@@ -2176,7 +2176,7 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +        usleep(kServicePollIntervalUs);
 +    }
 +
-+    LOGERR("Oplus H.40 decrypt: timed out waiting for binderized %s/%s get+ping\n",
++    LOGERR("[OPLUS DECRYPT] timed out waiting for binderized %s/%s get+ping\n",
 +           kCryptoengFqName, kCryptoengInstance);
 +    return false;
 +}
@@ -2227,7 +2227,7 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +        ::ndk::SpAIBinder service(AServiceManager_checkService(kAuthorizationService));
 +        if (service.get() != nullptr) {
 +            if (++stable_polls >= kStableServicePolls) {
-+                LOGINFO("[H40 V50 HANDOFF] %s ready after %d stable samples\n",
++                LOGINFO("[OPLUS DECRYPT] credential handoff: %s ready after %d stable samples\n",
 +                        kAuthorizationService, kStableServicePolls);
 +                return true;
 +            }
@@ -2236,13 +2236,13 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +        }
 +        usleep(kServicePollIntervalUs);
 +    }
-+    LOGERR("[H40 V50 HANDOFF] timed out waiting for %s\n", kAuthorizationService);
++    LOGERR("[OPLUS DECRYPT] credential handoff: timed out waiting for %s\n", kAuthorizationService);
 +    return false;
 +}
 +
 +bool PrepareCredentialServices() {
 +    if (!GetRuntimeState().data_mapped) {
-+        LOGERR("Oplus H.40 decrypt: refusing to start credential services before mapped /data\n");
++        LOGERR("[OPLUS DECRYPT] refusing to start credential services before mapped /data\n");
 +        return false;
 +    }
 +    if (!SetProperty("ctl.start", "vendor.gatekeeper-1-0")) return false;
@@ -2260,7 +2260,7 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +    void* symbol = dlsym(handle, name);
 +    const char* error = dlerror();
 +    if (error != nullptr) {
-+        LOGERR("Oplus H.40 decrypt: missing symbol %s: %s\n", name, error);
++        LOGERR("[OPLUS DECRYPT] missing symbol %s: %s\n", name, error);
 +        return nullptr;
 +    }
 +    return reinterpret_cast<T>(symbol);
@@ -2271,7 +2271,7 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +        Api loaded;
 +        loaded.handle = dlopen(kLibrary, RTLD_NOW | RTLD_LOCAL);
 +        if (loaded.handle == nullptr) {
-+            LOGINFO("Oplus H.40 decrypt unavailable: %s\n", dlerror());
++            LOGINFO("[OPLUS DECRYPT] unavailable: %s\n", dlerror());
 +            return loaded;
 +        }
 +        loaded.setup_de_ce = FindSymbol<SetupDeCeFn>(loaded.handle, kSetupDeCeSymbol);
@@ -2286,7 +2286,7 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +            loaded = {};
 +            return loaded;
 +        }
-+        LOGINFO("Oplus H.40 decrypt ABI loaded\n");
++        LOGINFO("[OPLUS DECRYPT] ABI loaded\n");
 +        return loaded;
 +    }();
 +    return api;
@@ -2300,16 +2300,16 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +bool CheckReadableFile(const char* path) {
 +    struct stat status = {};
 +    if (stat(path, &status) != 0) {
-+        LOGERR("Oplus H.40 decrypt: cannot stat required plaintext file %s: %s\n",
++        LOGERR("[OPLUS DECRYPT] cannot stat required plaintext file %s: %s\n",
 +               path, strerror(errno));
 +        return false;
 +    }
 +    if (!S_ISREG(status.st_mode)) {
-+        LOGERR("Oplus H.40 decrypt: required plaintext path is not a file: %s\n", path);
++        LOGERR("[OPLUS DECRYPT] required plaintext path is not a file: %s\n", path);
 +        return false;
 +    }
 +    if (access(path, R_OK) != 0) {
-+        LOGERR("Oplus H.40 decrypt: required plaintext file is unreadable: %s (%s)\n",
++        LOGERR("[OPLUS DECRYPT] required plaintext file is unreadable: %s (%s)\n",
 +               path, strerror(errno));
 +        return false;
 +    }
@@ -2319,17 +2319,17 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +bool CheckReadableDirectory(const char* path) {
 +    struct stat status = {};
 +    if (stat(path, &status) != 0) {
-+        LOGERR("Oplus H.40 decrypt: cannot stat required plaintext directory %s: %s\n",
++        LOGERR("[OPLUS DECRYPT] cannot stat required plaintext directory %s: %s\n",
 +               path, strerror(errno));
 +        return false;
 +    }
 +    if (!S_ISDIR(status.st_mode)) {
-+        LOGERR("Oplus H.40 decrypt: required plaintext path is not a directory: %s\n", path);
++        LOGERR("[OPLUS DECRYPT] required plaintext path is not a directory: %s\n", path);
 +        return false;
 +    }
 +    DIR* directory = opendir(path);
 +    if (directory == nullptr) {
-+        LOGERR("Oplus H.40 decrypt: cannot enumerate plaintext directory %s: %s\n",
++        LOGERR("[OPLUS DECRYPT] cannot enumerate plaintext directory %s: %s\n",
 +               path, strerror(errno));
 +        return false;
 +    }
@@ -2339,7 +2339,7 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +        // is the policy/key-status ioctl pair in CheckFscryptKeyPresent().
 +    }
 +    if (errno != 0) {
-+        LOGERR("Oplus H.40 decrypt: cannot read plaintext directory %s: %s\n",
++        LOGERR("[OPLUS DECRYPT] cannot read plaintext directory %s: %s\n",
 +               path, strerror(errno));
 +        closedir(directory);
 +        return false;
@@ -2382,7 +2382,7 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +bool ScanSingleUserDirectory(const char* path, const char* suffix, bool require_user0) {
 +    DIR* directory = opendir(path);
 +    if (directory == nullptr) {
-+        LOGERR("Oplus H.40 decrypt: cannot scan %s: %s\n", path, strerror(errno));
++        LOGERR("[OPLUS DECRYPT] cannot scan %s: %s\n", path, strerror(errno));
 +        return false;
 +    }
 +
@@ -2393,13 +2393,13 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +        int user_id = -1;
 +        if (!ParseCanonicalUserId(entry->d_name, suffix, &user_id)) continue;
 +        if (user_id == INT_MAX) {
-+            LOGERR("Oplus H.40 user0-only mode refusing malformed user entry %s/%s\n",
++            LOGERR("[OPLUS DECRYPT] user0-only mode refusing malformed user entry %s/%s\n",
 +                   path, entry->d_name);
 +            valid = false;
 +            break;
 +        }
 +        if (user_id != 0) {
-+            LOGINFO("[H40 USERMAP] ignoring secondary user id %d from %s/%s; "
++            LOGINFO("[OPLUS DECRYPT] user map: ignoring secondary user id %d from %s/%s; "
 +                    "user0-only decrypt remains enforced\n",
 +                    user_id, path, entry->d_name);
 +            errno = 0;
@@ -2408,13 +2408,13 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +        found_user0 = true;
 +    }
 +    if (valid && errno != 0) {
-+        LOGERR("Oplus H.40 decrypt: error while scanning %s: %s\n", path, strerror(errno));
++        LOGERR("[OPLUS DECRYPT] error while scanning %s: %s\n", path, strerror(errno));
 +        valid = false;
 +    }
 +    closedir(directory);
 +
 +    if (valid && require_user0 && !found_user0) {
-+        LOGERR("Oplus H.40 decrypt: user 0 is missing from %s\n", path);
++        LOGERR("[OPLUS DECRYPT] user 0 is missing from %s\n", path);
 +        valid = false;
 +    }
 +    return valid;
@@ -2433,7 +2433,7 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +bool CheckFscryptKeyPresent(const char* path) {
 +    const int directory_fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
 +    if (directory_fd < 0) {
-+        LOGERR("Oplus H.40 v3 cannot open CE path for fscrypt ioctls %s: %s\n",
++        LOGERR("[OPLUS DECRYPT] cannot open CE path for fscrypt ioctls %s: %s\n",
 +               path, strerror(errno));
 +        return false;
 +    }
@@ -2441,7 +2441,7 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +    struct fscrypt_get_policy_ex_arg policy_arg = {};
 +    policy_arg.policy_size = sizeof(policy_arg.policy);
 +    if (ioctl(directory_fd, FS_IOC_GET_ENCRYPTION_POLICY_EX, &policy_arg) != 0) {
-+        LOGERR("Oplus H.40 v3 FS_IOC_GET_ENCRYPTION_POLICY_EX failed for %s: %s\n",
++        LOGERR("[OPLUS DECRYPT] FS_IOC_GET_ENCRYPTION_POLICY_EX failed for %s: %s\n",
 +               path, strerror(errno));
 +        close(directory_fd);
 +        return false;
@@ -2451,7 +2451,7 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +    const unsigned int policy_version = policy_arg.policy.version;
 +    if (policy_version == FSCRYPT_POLICY_V1) {
 +        if (policy_arg.policy_size != sizeof(policy_arg.policy.v1)) {
-+            LOGERR("Oplus H.40 v3 invalid fscrypt v1 policy size for %s: %llu bytes\n",
++            LOGERR("[OPLUS DECRYPT] invalid fscrypt v1 policy size for %s: %llu bytes\n",
 +                   path, static_cast<unsigned long long>(policy_arg.policy_size));
 +            close(directory_fd);
 +            return false;
@@ -2462,7 +2462,7 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +               FSCRYPT_KEY_DESCRIPTOR_SIZE);
 +    } else if (policy_version == FSCRYPT_POLICY_V2) {
 +        if (policy_arg.policy_size != sizeof(policy_arg.policy.v2)) {
-+            LOGERR("Oplus H.40 v3 invalid fscrypt v2 policy size for %s: %llu bytes\n",
++            LOGERR("[OPLUS DECRYPT] invalid fscrypt v2 policy size for %s: %llu bytes\n",
 +                   path, static_cast<unsigned long long>(policy_arg.policy_size));
 +            close(directory_fd);
 +            return false;
@@ -2472,16 +2472,16 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +               policy_arg.policy.v2.master_key_identifier,
 +               FSCRYPT_KEY_IDENTIFIER_SIZE);
 +    } else {
-+        LOGERR("Oplus H.40 v3 unsupported fscrypt policy version %u for %s\n",
++        LOGERR("[OPLUS DECRYPT] unsupported fscrypt policy version %u for %s\n",
 +               policy_version, path);
 +        close(directory_fd);
 +        return false;
 +    }
 +
-+    LOGINFO("Oplus H.40 v3 FS_IOC_GET_ENCRYPTION_POLICY_EX version=%u for %s\n",
++    LOGINFO("[OPLUS DECRYPT] FS_IOC_GET_ENCRYPTION_POLICY_EX version=%u for %s\n",
 +            policy_version, path);
 +    if (ioctl(directory_fd, FS_IOC_GET_ENCRYPTION_KEY_STATUS, &status_arg) != 0) {
-+        LOGERR("Oplus H.40 v3 FS_IOC_GET_ENCRYPTION_KEY_STATUS failed for %s: %s\n",
++        LOGERR("[OPLUS DECRYPT] FS_IOC_GET_ENCRYPTION_KEY_STATUS failed for %s: %s\n",
 +               path, strerror(errno));
 +        close(directory_fd);
 +        return false;
@@ -2489,11 +2489,11 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +    close(directory_fd);
 +
 +    if (status_arg.status != FSCRYPT_KEY_STATUS_PRESENT) {
-+        LOGERR("Oplus H.40 v3 FS_IOC_GET_ENCRYPTION_KEY_STATUS not PRESENT for %s: status=%u\n",
++        LOGERR("[OPLUS DECRYPT] FS_IOC_GET_ENCRYPTION_KEY_STATUS not PRESENT for %s: status=%u\n",
 +               path, status_arg.status);
 +        return false;
 +    }
-+    LOGINFO("Oplus H.40 v3 FS_IOC_GET_ENCRYPTION_KEY_STATUS PRESENT for %s: status=%u\n",
++    LOGINFO("[OPLUS DECRYPT] FS_IOC_GET_ENCRYPTION_KEY_STATUS PRESENT for %s: status=%u\n",
 +            path, status_arg.status);
 +    return true;
 +}
@@ -2510,16 +2510,16 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +    const std::string mapper = ReadProperty("ro.crypto.fs_crypto_blkdev");
 +    struct stat status = {};
 +    if (mapper.empty() || mapper == "error") {
-+        LOGERR("Oplus H.40 decrypt: metadata mapper property is empty or invalid\n");
++        LOGERR("[OPLUS DECRYPT] metadata mapper property is empty or invalid\n");
 +        return false;
 +    }
 +    if (stat(mapper.c_str(), &status) != 0) {
-+        LOGERR("Oplus H.40 decrypt: cannot stat metadata mapper '%s': %s\n",
++        LOGERR("[OPLUS DECRYPT] cannot stat metadata mapper '%s': %s\n",
 +               mapper.c_str(), strerror(errno));
 +        return false;
 +    }
 +    if (!S_ISBLK(status.st_mode)) {
-+        LOGERR("Oplus H.40 decrypt: metadata mapper is not a block device: %s\n",
++        LOGERR("[OPLUS DECRYPT] metadata mapper is not a block device: %s\n",
 +               mapper.c_str());
 +        return false;
 +    }
@@ -2545,7 +2545,7 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +            *twrp_password_type = 1;
 +            return true;
 +        default:
-+            LOGERR("Oplus H.40 decrypt: unsupported user 0 password type %d\n",
++            LOGERR("[OPLUS DECRYPT] unsupported user 0 password type %d\n",
 +                   raw_password_type);
 +            return false;
 +    }
@@ -2553,13 +2553,13 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +
 +bool PrepareUser0DeState(const Api& api, User0State* user0_state) {
 +    if (!EnsureFscryptSessionKeyring()) {
-+        LOGERR("[H40 FSCRYPTKEYRING] refusing setup_de_ce(0) without keyring\n");
++        LOGERR("[OPLUS DECRYPT] keyring: refusing setup_de_ce(0) without keyring\n");
 +        return false;
 +    }
-+    LOGINFO("[H40 FSCRYPTKEYRING] ready before setup_de_ce(0)\n");
-+    LOGINFO("Oplus H.40 invoking setup_de_ce(0)\n");
++    LOGINFO("[OPLUS DECRYPT] keyring: ready before setup_de_ce(0)\n");
++    LOGINFO("[OPLUS DECRYPT] invoking setup_de_ce(0)\n");
 +    const bool setup_succeeded = api.setup_de_ce(0);
-+    LOGINFO("Oplus H.40 setup_de_ce(0) returned %d\n", setup_succeeded);
++    LOGINFO("[OPLUS DECRYPT] setup_de_ce(0) returned %d\n", setup_succeeded);
 +    if (!setup_succeeded) return false;
 +
 +    if (!SetProperty("recovery.reload.persist", "trigger_reload_persist")) return false;
@@ -2574,7 +2574,7 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +    user0_state->raw_password_type = raw_password_type;
 +    user0_state->twrp_password_type = twrp_password_type;
 +    user0_state->no_credential = raw_password_type == -1;
-+    LOGINFO("Oplus H.40 user 0 password type raw=%d mapped_twrp=%d\n",
++    LOGINFO("[OPLUS DECRYPT] user 0 password type raw=%d mapped_twrp=%d\n",
 +            raw_password_type, twrp_password_type);
 +
 +    if (user0_state->no_credential) {
@@ -2582,7 +2582,7 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +        // only when the OEM CE helper proves that the no-lock key is usable.
 +        RuntimeState& state = GetRuntimeState();
 +        state.user0_ce_ready = api.init_user0_ce();
-+        LOGINFO("Oplus H.40 no-credential CE postcondition returned %d\n",
++        LOGINFO("[OPLUS DECRYPT] no-credential CE postcondition returned %d\n",
 +                state.user0_ce_ready);
 +        if (!state.user0_ce_ready) return false;
 +        if (!ValidateUser0CeLayout()) return false;
@@ -2593,7 +2593,7 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +        if (!CheckReadableDirectory("/data/system_de/0/spblob")) return false;
 +    }
 +
-+    LOGINFO("Oplus H.40 user 0 DE state validated\n");
++    LOGINFO("[OPLUS DECRYPT] user 0 DE state validated\n");
 +    return true;
 +}
 +
@@ -2604,7 +2604,7 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +    if (!EnsureFscryptSessionKeyring()) {
 +        return FailActive("fscrypt session keyring unavailable before metadata decrypt");
 +    }
-+    LOGINFO("[H40 FSCRYPTKEYRING] ready before TWRP metadata decrypt\n");
++    LOGINFO("[OPLUS DECRYPT] keyring: ready before TWRP metadata decrypt\n");
 +
 +    const Api& api = GetApi();
 +    if (api.handle == nullptr) return Result::kUnavailable;
@@ -2620,7 +2620,7 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +    }
 +
 +    state.phase = Phase::kActive;
-+    LOGINFO("Oplus H.40 v4 hybrid activated; TWRP owns metadata mapping, OEM owns DE/CE\n");
++    LOGINFO("[OPLUS DECRYPT] hybrid activated; TWRP owns metadata mapping, OEM owns DE/CE\n");
 +
 +    if (!PrepareMetadataServices()) {
 +        return FailActive("metadata crypto services unavailable");
@@ -2630,7 +2630,7 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +    // backend. PrepareMetadataServices() above has already brought up the H.40
 +    // qsee/keymaster/hwservicemanager stack, so no Keystore2 Binder daemon is
 +    // needed for metadata-key retrieval.
-+    LOGINFO("Oplus H.40 v4.1 metadata backend: direct HIDL Keymaster 4.0\n");
++    LOGINFO("[OPLUS DECRYPT] metadata backend: direct HIDL Keymaster 4.0\n");
 +    return Result::kSuccess;
 +}
 +
@@ -2642,7 +2642,7 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +Result MountMetadataAndPrepareDe(const std::string& mount_point, User0State* user0_state) {
 +    std::lock_guard<std::mutex> lock(GetRuntimeMutex());
 +    if (user0_state == nullptr || mount_point != "/data") {
-+        LOGERR("Oplus H.40 decrypt: refusing invalid metadata request for '%s'\n",
++        LOGERR("[OPLUS DECRYPT] refusing invalid metadata request for '%s'\n",
 +               mount_point.c_str());
 +        return Result::kFatalFailure;
 +    }
@@ -2663,7 +2663,7 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +        return FailActive("TWRP metadata handoff requested before runtime preparation");
 +    }
 +
-+    LOGINFO("Oplus H.40 v4 hybrid adopting TWRP metadata mapping for %s\n",
++    LOGINFO("[OPLUS DECRYPT] hybrid adopting TWRP metadata mapping for %s\n",
 +            mount_point.c_str());
 +    if (!ValidateMapper(&state.user0)) return FailActive("TWRP metadata mapper validation failed");
 +    if (!MarkDataMappedAndStartGatekeeper()) {
@@ -2693,7 +2693,7 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +    // patch plus modern handoff is validated only for that user. A secondary
 +    // user remains an authoritative refusal, never a generic fallback.
 +    if (user_id != 0) {
-+        LOGERR("Oplus H.40 user0-only mode refusing credential for user %d\n", user_id);
++        LOGERR("[OPLUS DECRYPT] user0-only mode refusing credential for user %d\n", user_id);
 +        return FailActive("credential request targeted an unsupported user");
 +    }
 +
@@ -2702,14 +2702,14 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +
 +    if (password == "!") {
 +        if (!state.user0.no_credential) {
-+            LOGERR("Oplus H.40 decrypt: refusing no-lock probe for credentialed user 0\n");
++            LOGERR("[OPLUS DECRYPT] refusing no-lock probe for credentialed user 0\n");
 +            return FailActive("no-lock credential used for a locked user");
 +        }
 +
 +        // Recheck current CE state instead of trusting the setup-time result.
-+        LOGINFO("Oplus H.40 rechecking no-credential user 0 CE postcondition\n");
++        LOGINFO("[OPLUS DECRYPT] rechecking no-credential user 0 CE postcondition\n");
 +        state.user0_ce_ready = api.init_user0_ce();
-+        LOGINFO("Oplus H.40 no-credential user 0 CE recheck returned %d\n",
++        LOGINFO("[OPLUS DECRYPT] no-credential user 0 CE recheck returned %d\n",
 +                state.user0_ce_ready);
 +        if (!state.user0_ce_ready) {
 +            return FailActive("no-credential CE recheck failed");
@@ -2718,19 +2718,19 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +            return FailActive("no-credential CE paths are not accessible");
 +        }
 +        state.phase = Phase::kUnlocked;
-+        LOGINFO("Oplus H.40 v3 no-lock user 0 CE postcondition satisfied\n");
++        LOGINFO("[OPLUS DECRYPT] no-lock user 0 CE postcondition satisfied\n");
 +        return Result::kSuccess;
 +    }
 +
 +    if (state.user0.no_credential) {
-+        LOGERR("Oplus H.40 decrypt: refusing credential verify for no-lock user 0\n");
++        LOGERR("[OPLUS DECRYPT] refusing credential verify for no-lock user 0\n");
 +        return FailActive("credential supplied for a no-lock user");
 +    }
 +    if (!PrepareCredentialServices()) {
 +        return FailActive("credential services unavailable before isolated verifier");
 +    }
 +
-+    LOGINFO("[H40 V50 HANDOFF] launching exact-H.40 isolated credential gate for user 0\n");
++    LOGINFO("[OPLUS DECRYPT] credential handoff: launching exact-H.40 isolated credential gate for user 0\n");
 +    const IsolatedVerifyResult isolated_result =
 +            VerifyCredentialIsolated(password, state.user0.raw_password_type);
 +    if (isolated_result == IsolatedVerifyResult::kRejected) {
@@ -2746,7 +2746,7 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +    // Keep the adapter locked until TeamWin derives the real synthetic-password
 +    // secret and the fscrypt key/policy proof succeeds.
 +    state.phase = Phase::kAwaitingModernHandoff;
-+    LOGINFO("[H40 V50 HANDOFF] OEM credential accepted; requesting modern SP unwrap\n");
++    LOGINFO("[OPLUS DECRYPT] credential handoff: OEM credential accepted; requesting modern SP unwrap\n");
 +    return Result::kModernHandoff;
 +}
 +
@@ -2764,7 +2764,7 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +        return FailActive("modern handoff returned without CE key/layout proof");
 +    }
 +    state.phase = Phase::kUnlocked;
-+    LOGINFO("[H40 V50 HANDOFF] modern user 0 CE postcondition satisfied\n");
++    LOGINFO("[OPLUS DECRYPT] credential handoff: modern user 0 CE postcondition satisfied\n");
 +    return Result::kSuccess;
 +}
 +
@@ -2831,25 +2831,25 @@ index 2766b4c07ad77d364069af7afcd18d537fab238d..8be659a121515363ddeedcab10da9db9
 +	struct stat mapper_status = {};
 +	struct stat data_status = {};
 +	if (stat(mapper.c_str(), &mapper_status) != 0) {
-+		LOGERR("Oplus H.40 decrypt: cannot stat metadata mapper '%s': %s\n",
++		LOGERR("[OPLUS DECRYPT] cannot stat metadata mapper '%s': %s\n",
 +			mapper.c_str(), strerror(errno));
 +		return false;
 +	}
 +	if (!S_ISBLK(mapper_status.st_mode)) {
-+		LOGERR("Oplus H.40 decrypt: metadata mapper is not a block device: %s\n",
++		LOGERR("[OPLUS DECRYPT] metadata mapper is not a block device: %s\n",
 +			mapper.c_str());
 +		return false;
 +	}
 +	if (stat("/data", &data_status) != 0) {
-+		LOGERR("Oplus H.40 decrypt: mounted /data cannot be inspected: %s\n", strerror(errno));
++		LOGERR("[OPLUS DECRYPT] mounted /data cannot be inspected: %s\n", strerror(errno));
 +		return false;
 +	}
 +	if (!S_ISDIR(data_status.st_mode)) {
-+		LOGERR("Oplus H.40 decrypt: /data is not a directory after OEM metadata setup\n");
++		LOGERR("[OPLUS DECRYPT] /data is not a directory after OEM metadata setup\n");
 +		return false;
 +	}
 +	if (data_status.st_dev != mapper_status.st_rdev) {
-+		LOGERR("Oplus H.40 decrypt: /data device %llu does not match mapper %s device %llu\n",
++		LOGERR("[OPLUS DECRYPT] /data device %llu does not match mapper %s device %llu\n",
 +			static_cast<unsigned long long>(data_status.st_dev), mapper.c_str(),
 +			static_cast<unsigned long long>(mapper_status.st_rdev));
 +		return false;
@@ -2867,7 +2867,7 @@ index 2766b4c07ad77d364069af7afcd18d537fab238d..8be659a121515363ddeedcab10da9db9
  	TWPartition* Decrypt_Data = Find_Partition_By_Path("/data");
 +#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
 +	if (g_oplus_h40_decrypt_blocked) {
-+		LOGERR("Oplus H.40 v3 failure latch is set; refusing further OEM decrypt operations\n");
++		LOGERR("[OPLUS DECRYPT] failure latch is set; refusing further OEM decrypt operations\n");
 +		return;
 +	}
 +#endif
@@ -2888,7 +2888,7 @@ index 2766b4c07ad77d364069af7afcd18d537fab238d..8be659a121515363ddeedcab10da9db9
 +				oplus_runtime_ready = true;
 +			} else if (oplus_runtime == twrp::oplus_h40::Result::kFatalFailure) {
 +				g_oplus_h40_decrypt_blocked = true;
-+				LOGERR("Oplus H.40 v4 runtime preparation failed; refusing metadata/FDE fallback\n");
++				LOGERR("[OPLUS DECRYPT] runtime preparation failed; refusing metadata/FDE fallback\n");
 +				return;
 +			}
 +			if (android::vold::fscrypt_mount_metadata_encrypted(Decrypt_Data->Actual_Block_Device, Decrypt_Data->Mount_Point, false, false, Decrypt_Data->Current_File_System, TWFunc::Path_Exists(additional_fstab) ? additional_fstab : "")) {
@@ -2918,7 +2918,7 @@ index 2766b4c07ad77d364069af7afcd18d537fab238d..8be659a121515363ddeedcab10da9db9
 +						} else {
 +							Decrypt_Data->Is_Decrypted = false;
 +							g_oplus_h40_decrypt_blocked = true;
-+							LOGERR("Oplus H.40 v4 DE handoff failed after TWRP metadata mount (result=%d)\n",
++							LOGERR("[OPLUS DECRYPT] DE handoff failed after TWRP metadata mount (result=%d)\n",
 +								static_cast<int>(oplus_handoff));
 +							return;
 +						}
@@ -2928,7 +2928,7 @@ index 2766b4c07ad77d364069af7afcd18d537fab238d..8be659a121515363ddeedcab10da9db9
 +							!IsOplusMapperMountedAtData(oplus_user0.crypto_block_device)) {
 +							Decrypt_Data->Is_Decrypted = false;
 +							g_oplus_h40_decrypt_blocked = true;
-+							LOGERR("Oplus H.40 mounted-data mapper proof failed; refusing generic fallback\n");
++							LOGERR("[OPLUS DECRYPT] mounted-data mapper proof failed; refusing generic fallback\n");
 +							return;
 +						}
 +						// The OEM routine may have mounted /data before TWPartition::Mount,
@@ -2938,7 +2938,7 @@ index 2766b4c07ad77d364069af7afcd18d537fab238d..8be659a121515363ddeedcab10da9db9
 +						Decrypt_Data->Decrypted_Block_Device = oplus_user0.crypto_block_device;
 +						Decrypt_Data->Actual_Block_Device = oplus_user0.crypto_block_device;
 +
-+						LOGINFO("Oplus H.40 v4 preserving TWRP metadata mapping and bypassing generic DE/user discovery\n");
++						LOGINFO("[OPLUS DECRYPT] preserving TWRP metadata mapping and bypassing generic DE/user discovery\n");
 +
 +						// Preserve the normal FBE backup/wipe exclusions. User discovery
 +						// and key installation already belong to the selected OEM state
@@ -2966,7 +2966,7 @@ index 2766b4c07ad77d364069af7afcd18d537fab238d..8be659a121515363ddeedcab10da9db9
 +							property_set("twrp.all.users.decrypted", "false") != 0) {
 +							Decrypt_Data->Is_Decrypted = false;
 +							g_oplus_h40_decrypt_blocked = true;
-+							LOGERR("Oplus H.40 failed to publish synthesized user state; refusing generic fallback\n");
++							LOGERR("[OPLUS DECRYPT] failed to publish synthesized user state; refusing generic fallback\n");
 +							return;
 +						}
 +
@@ -2985,7 +2985,7 @@ index 2766b4c07ad77d364069af7afcd18d537fab238d..8be659a121515363ddeedcab10da9db9
 +						if (data_state_error != 0) {
 +							Decrypt_Data->Is_Decrypted = false;
 +							g_oplus_h40_decrypt_blocked = true;
-+							LOGERR("Oplus H.40 failed to publish synthesized DataManager state; refusing generic fallback\n");
++							LOGERR("[OPLUS DECRYPT] failed to publish synthesized DataManager state; refusing generic fallback\n");
 +							return;
 +						}
 +
@@ -3002,7 +3002,7 @@ index 2766b4c07ad77d364069af7afcd18d537fab238d..8be659a121515363ddeedcab10da9db9
 +						Decrypt_Data->Is_Encrypted = true;
 +						Decrypt_Data->Is_Decrypted = false;
 +						Check_Users_Decryption_Status();
-+						LOGINFO("Oplus H.40 v4 synthesized TWRP user 0 state: raw_pwtype=%d twrp_pwtype=%d\n",
++						LOGINFO("[OPLUS DECRYPT] synthesized TWRP user 0 state: raw_pwtype=%d twrp_pwtype=%d\n",
 +							oplus_user0.raw_password_type, oplus_user0.twrp_password_type);
 +					} else
 +#endif
@@ -3016,7 +3016,7 @@ index 2766b4c07ad77d364069af7afcd18d537fab238d..8be659a121515363ddeedcab10da9db9
 +					if (oplus_metadata_used) {
 +						Decrypt_Data->Is_Decrypted = false;
 +						g_oplus_h40_decrypt_blocked = true;
-+						LOGERR("Oplus H.40 data mount failed; refusing generic fallback\n");
++						LOGERR("[OPLUS DECRYPT] data mount failed; refusing generic fallback\n");
 +						return;
 +					}
 +#endif
@@ -3025,7 +3025,7 @@ index 2766b4c07ad77d364069af7afcd18d537fab238d..8be659a121515363ddeedcab10da9db9
 +#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
 +				if (oplus_runtime_ready) {
 +					g_oplus_h40_decrypt_blocked = true;
-+					LOGERR("Oplus H.40 v4 TWRP metadata mapping failed after runtime activation; refusing FDE fallback\n");
++					LOGERR("[OPLUS DECRYPT] TWRP metadata mapping failed after runtime activation; refusing FDE fallback\n");
 +					return;
 +				}
 +#endif
@@ -3038,7 +3038,7 @@ index 2766b4c07ad77d364069af7afcd18d537fab238d..8be659a121515363ddeedcab10da9db9
  #ifdef TW_INCLUDE_CRYPTO
 +	#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
 +	if (g_oplus_h40_decrypt_blocked) {
-+		LOGERR("Oplus H.40 v3 failure latch is set; refusing further OEM decrypt operations\n");
++		LOGERR("[OPLUS DECRYPT] failure latch is set; refusing further OEM decrypt operations\n");
 +		return -1;
 +	}
 +	#endif
@@ -3053,7 +3053,7 @@ index 2766b4c07ad77d364069af7afcd18d537fab238d..8be659a121515363ddeedcab10da9db9
 +		const bool oplus_active = twrp::oplus_h40::IsActive();
 +		bool user_found = false;
 +		if (oplus_active && user_id != 0) {
-+			LOGERR("Oplus H.40 v3 supports only user 0; refusing user %d\n", user_id);
++			LOGERR("[OPLUS DECRYPT] supports only user 0; refusing user %d\n", user_id);
 +			return -1;
 +		}
 +		#endif
@@ -3076,7 +3076,7 @@ index 2766b4c07ad77d364069af7afcd18d537fab238d..8be659a121515363ddeedcab10da9db9
 +		}
 +		#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
 +		if (oplus_active && !user_found) {
-+			LOGERR("Oplus H.40 user 0 is missing from the synthesized TWRP user map\n");
++			LOGERR("[OPLUS DECRYPT] user 0 is missing from the synthesized TWRP user map\n");
 +			g_oplus_h40_decrypt_blocked = true;
 +			return -1;
  		}
@@ -3101,7 +3101,7 @@ index 2766b4c07ad77d364069af7afcd18d537fab238d..8be659a121515363ddeedcab10da9db9
 +			// The OEM verifier remains isolated.  TeamWin SP unwrap and the
 +			// current-only FsCrypt install must run here so the recovery process
 +			// retains GetCePolicies() and KeyStorage state after this call.
-+			LOGINFO("[H40 V51 PARENT] deriving and installing the accepted user 0 credential in the recovery parent\n");
++			LOGINFO("[OPLUS DECRYPT] parent key install: deriving and installing the accepted user 0 credential in the recovery parent\n");
 +			const bool modern_decrypt =
 +				android::keystore::Decrypt_User_H40_Modern(user_id, Password);
 +			decrypt_success = twrp::oplus_h40::CompleteModernHandoff(modern_decrypt) ==
@@ -3121,7 +3121,7 @@ index 2766b4c07ad77d364069af7afcd18d537fab238d..8be659a121515363ddeedcab10da9db9
 +			// Defense in depth: Unavailable is legal only before activation.
 +			try_generic_decrypt = false;
 +			g_oplus_h40_decrypt_blocked = true;
-+			LOGERR("Oplus H.40 active adapter returned unavailable; refusing generic credential fallback\n");
++			LOGERR("[OPLUS DECRYPT] active adapter returned unavailable; refusing generic credential fallback\n");
 +		}
 +		if (try_generic_decrypt) {
 +			decrypt_success = android::keystore::Decrypt_User(user_id, Password);
@@ -3136,7 +3136,7 @@ index 2766b4c07ad77d364069af7afcd18d537fab238d..8be659a121515363ddeedcab10da9db9
 +#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
 +				if (oplus_result == twrp::oplus_h40::Result::kSuccess ||
 +					oplus_result == twrp::oplus_h40::Result::kModernHandoff) {
-+					LOGINFO("Oplus H.40 user 0 decrypted; secondary-user sweep disabled\n");
++					LOGINFO("[OPLUS DECRYPT] user 0 decrypted; secondary-user sweep disabled\n");
 +				} else {
 +#endif
  				// When decrypting user 0 also try all other users

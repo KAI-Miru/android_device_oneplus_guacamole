@@ -245,14 +245,17 @@ def main() -> None:
     helper = (args.recovery_root / "system/bin/oplus_h40_credential_helper").read_bytes()
     require(final_index["system/bin/oplus_h40_credential_helper"].data == helper, "credential helper mismatch")
     require(PRIVATE_VERIFY not in relocated and PRIVATE_VERIFY in helper, "OEM verifier isolation failed")
+    require(b"OEM probe contradicted the validated .pwd protector" not in relocated,
+            "obsolete retained-.pwd fatal branch survived")
     for marker in (
-        b"[OPLUS V56 LAYOUT]",
+        b"[OPLUS DECRYPT] CE layout:",
         b"direct-aes-minimal",
         b"direct-aes-legacy-none",
-        b"[H40 PORTIDENTITY] using mounted dynamic system",
-        b"[H40 V51 PARENT]",
-        b"[OPLUS V58 PWDPROBE]",
-        b"[OPLUS V59 SETUPGUARD]",
+        b"[OPLUS DECRYPT] system identity: using mounted dynamic system",
+        b"[OPLUS DECRYPT] parent key install:",
+        b"[OPLUS DECRYPT] password state: validated .pwd protector; OEM password-type call permitted",
+        b"[OPLUS DECRYPT] setup guard:",
+        b"[OPLUS DECRYPT] password state: OEM reports no active credential; treating retained .pwd as advisory metadata",
     ):
         require(marker in relocated, f"private recovery lacks marker {marker!r}")
 

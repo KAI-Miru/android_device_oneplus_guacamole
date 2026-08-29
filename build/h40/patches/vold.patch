@@ -142,7 +142,7 @@ index d9f034b538454354a65682dd58ed02f4badd7d5b..d0a9d112186fae9b166e50fdb14be502
 +		const std::string& Password, bool h40_current_only) {
 +	if (h40_current_only &&
 +		(user_id != 0 || Password.empty() || Password == "!")) {
-+		printf("[H40 V51 PARENT] refusing invalid current-only synthetic-password request\n");
++		printf("[OPLUS DECRYPT] parent key install: refusing invalid current-only synthetic-password request\n");
 +		return false;
 +	}
  	printf("Attempting to decrypt user's synthetic password\n");
@@ -201,7 +201,7 @@ index d9f034b538454354a65682dd58ed02f4badd7d5b..d0a9d112186fae9b166e50fdb14be502
 +	// permission, so only that exact selector reaches Keystore2 with false.
 +	const bool forced_operation = !h40_current_only;
 +	if (h40_current_only) {
-+		printf("[H40 V51 FORCEDOP] requesting an ordinary Keystore2 operation\n");
++		printf("[OPLUS DECRYPT] keystore: requesting an ordinary Keystore2 operation\n");
 +	}
 +	secret = android::keystore::unwrapSyntheticPasswordBlob(spblob_path, handle_str, user_id,
 +		(const void*)&application_id[0], PASSWORD_TOKEN_SIZE + SHA512_DIGEST_LENGTH,
@@ -214,7 +214,7 @@ index d9f034b538454354a65682dd58ed02f4badd7d5b..d0a9d112186fae9b166e50fdb14be502
 -	if (!Decrypt_CE_storage(user_id, token, secret)) {
 +	if (h40_current_only) {
 +		if (!fscrypt_unlock_user0_key_current_only(secret)) {
-+			printf("[H40 V51 PARENT] guarded current-only CE key install failed\n");
++			printf("[OPLUS DECRYPT] parent key install: guarded current-only CE key install failed\n");
 +			return Free_Return(retval, weaver_key, &pwd);
 +		}
 +	} else if (!Decrypt_CE_storage(user_id, token, secret)) {
@@ -232,7 +232,7 @@ index d9f034b538454354a65682dd58ed02f4badd7d5b..d0a9d112186fae9b166e50fdb14be502
 +extern "C" bool Decrypt_User_H40_Modern(const userid_t user_id,
 +		const std::string& Password) {
 +	if (user_id != 0 || Password.empty() || Password == "!") {
-+		printf("[H40 V51 PARENT] refusing non-user0 or empty/default credential\n");
++		printf("[OPLUS DECRYPT] parent key install: refusing non-user0 or empty/default credential\n");
 +		return false;
 +	}
 +	return Decrypt_User_Synth_Pass_Impl(user_id, Password, true);
@@ -388,7 +388,7 @@ index 7505e560451c24f50bf1d1615e37b1b9a1c3acf9..4ebfe10f3f0507e3a24476755dba94bb
 +    if (options->version == 1 && entry->fs_mgr_flags.wrapped_key) {
 +        options->use_hw_wrapped_key = true;
      }
-+    LOG(INFO) << "[H40 FSCRYPTMODE] data options: version=" << options->version
++    LOG(INFO) << "[OPLUS DECRYPT] fscrypt mode: data options: version=" << options->version
 +              << " parsedWrapped=" << parsed_wrapped_key
 +              << " legacyFstabWrapped=" << entry->fs_mgr_flags.wrapped_key
 +              << " effectiveWrapped=" << options->use_hw_wrapped_key;
@@ -472,10 +472,10 @@ index 7505e560451c24f50bf1d1615e37b1b9a1c3acf9..4ebfe10f3f0507e3a24476755dba94bb
          if (!install_storage_key(DATA_MNT_POINT, options, de_key, &de_policy)) return false;
 -        auto ret = s_de_policies.insert({user_id, de_policy});
 +        auto& de_policies = GetDePolicies();
-+        LOG(INFO) << "[H40 FSCRYPTLAZY] DE policies ready: user=" << user_id
++        LOG(INFO) << "[OPLUS DECRYPT] fscrypt DE: DE policies ready: user=" << user_id
 +                  << " size=" << de_policies.size();
 +        auto ret = de_policies.insert({user_id, de_policy});
-+        LOG(INFO) << "[H40 FSCRYPTLAZY] DE policy insertion complete: user=" << user_id
++        LOG(INFO) << "[OPLUS DECRYPT] fscrypt DE: DE policy insertion complete: user=" << user_id
 +                  << " inserted=" << ret.second << " size=" << de_policies.size();
          if (!ret.second && ret.first->second != de_policy) {
              LOG(ERROR) << "DE policy for user" << user_id << " changed";
@@ -508,11 +508,11 @@ index 7505e560451c24f50bf1d1615e37b1b9a1c3acf9..4ebfe10f3f0507e3a24476755dba94bb
 -            retry = false;
 -            goto install;
 -        }
-+        LOG(ERROR) << "[H40 FSCRYPTMODE] system key install failed without mode fallback: wrapped="
++        LOG(ERROR) << "[OPLUS DECRYPT] fscrypt mode: system key install failed without mode fallback: wrapped="
 +                   << options.use_hw_wrapped_key;
          return false;
      }
-+    LOG(INFO) << "[H40 FSCRYPTMODE] system key installed without mode fallback: wrapped="
++    LOG(INFO) << "[OPLUS DECRYPT] fscrypt mode: system key installed without mode fallback: wrapped="
 +              << options.use_hw_wrapped_key;
  
      std::string options_string;
@@ -599,12 +599,12 @@ index 7505e560451c24f50bf1d1615e37b1b9a1c3acf9..4ebfe10f3f0507e3a24476755dba94bb
 +    const int fd = TEMP_FAILURE_RETRY(
 +            openat(parent_fd, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
 +    if (fd < 0) {
-+        PLOG(ERROR) << "[H40 V51 CURRENT] cannot open directory component " << name;
++        PLOG(ERROR) << "[OPLUS DECRYPT] parent CE key: cannot open directory component " << name;
 +        return false;
 +    }
 +    struct stat status = {};
 +    if (fstat(fd, &status) != 0 || !S_ISDIR(status.st_mode)) {
-+        PLOG(ERROR) << "[H40 V51 CURRENT] invalid directory component " << name;
++        PLOG(ERROR) << "[OPLUS DECRYPT] parent CE key: invalid directory component " << name;
 +        close(fd);
 +        return false;
 +    }
@@ -617,12 +617,12 @@ index 7505e560451c24f50bf1d1615e37b1b9a1c3acf9..4ebfe10f3f0507e3a24476755dba94bb
 +    const int scan_fd = TEMP_FAILURE_RETRY(
 +            fcntl(directory_fd, F_DUPFD_CLOEXEC, 0));
 +    if (scan_fd < 0) {
-+        PLOG(ERROR) << "[H40 V51 CURRENT] cannot duplicate " << label;
++        PLOG(ERROR) << "[OPLUS DECRYPT] parent CE key: cannot duplicate " << label;
 +        return false;
 +    }
 +    auto directory = std::unique_ptr<DIR, int (*)(DIR*)>(fdopendir(scan_fd), closedir);
 +    if (!directory) {
-+        PLOG(ERROR) << "[H40 V51 CURRENT] cannot enumerate " << label;
++        PLOG(ERROR) << "[OPLUS DECRYPT] parent CE key: cannot enumerate " << label;
 +        close(scan_fd);
 +        return false;
 +    }
@@ -633,13 +633,13 @@ index 7505e560451c24f50bf1d1615e37b1b9a1c3acf9..4ebfe10f3f0507e3a24476755dba94bb
 +        const std::string name(entry->d_name);
 +        if (name == "." || name == "..") continue;
 +        if (!entries->insert(name).second) {
-+            LOG(ERROR) << "[H40 V51 CURRENT] duplicate entry " << label << "/" << name;
++            LOG(ERROR) << "[OPLUS DECRYPT] parent CE key: duplicate entry " << label << "/" << name;
 +            return false;
 +        }
 +        errno = 0;
 +    }
 +    if (errno != 0) {
-+        PLOG(ERROR) << "[H40 V51 CURRENT] failed while enumerating " << label;
++        PLOG(ERROR) << "[OPLUS DECRYPT] parent CE key: failed while enumerating " << label;
 +        return false;
 +    }
 +    return true;
@@ -651,7 +651,7 @@ index 7505e560451c24f50bf1d1615e37b1b9a1c3acf9..4ebfe10f3f0507e3a24476755dba94bb
 +    std::set<std::string> entries;
 +    if (!h40_read_directory_entries(directory_fd, label, &entries)) return false;
 +    if (entries != expected) {
-+        LOG(ERROR) << "[H40 V51 CURRENT] unsupported entry set in " << label;
++        LOG(ERROR) << "[OPLUS DECRYPT] parent CE key: unsupported entry set in " << label;
 +        return false;
 +    }
 +    return true;
@@ -664,13 +664,13 @@ index 7505e560451c24f50bf1d1615e37b1b9a1c3acf9..4ebfe10f3f0507e3a24476755dba94bb
 +    android::base::unique_fd fd(TEMP_FAILURE_RETRY(
 +            openat(directory_fd, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)));
 +    if (fd < 0) {
-+        PLOG(ERROR) << "[H40 V51 CURRENT] cannot open " << name;
++        PLOG(ERROR) << "[OPLUS DECRYPT] parent CE key: cannot open " << name;
 +        return false;
 +    }
 +    struct stat status = {};
 +    if (fstat(fd, &status) != 0 || !S_ISREG(status.st_mode) ||
 +        status.st_nlink != 1 || status.st_size != expected_size) {
-+        LOG(ERROR) << "[H40 V51 CURRENT] malformed " << name
++        LOG(ERROR) << "[OPLUS DECRYPT] parent CE key: malformed " << name
 +                   << ": mode=" << status.st_mode
 +                   << " links=" << status.st_nlink << " size=" << status.st_size;
 +        return false;
@@ -682,23 +682,23 @@ index 7505e560451c24f50bf1d1615e37b1b9a1c3acf9..4ebfe10f3f0507e3a24476755dba94bb
 +        const ssize_t count = TEMP_FAILURE_RETRY(
 +                read(fd.get(), &contents[offset], contents.size() - offset));
 +        if (count <= 0) {
-+            PLOG(ERROR) << "[H40 V51 CURRENT] short read from " << name;
++            PLOG(ERROR) << "[OPLUS DECRYPT] parent CE key: short read from " << name;
 +            return false;
 +        }
 +        offset += static_cast<size_t>(count);
 +    }
 +    char extra = 0;
 +    if (TEMP_FAILURE_RETRY(read(fd.get(), &extra, 1)) != 0) {
-+        LOG(ERROR) << "[H40 V51 CURRENT] grew while reading " << name;
++        LOG(ERROR) << "[OPLUS DECRYPT] parent CE key: grew while reading " << name;
 +        return false;
 +    }
 +    if (expected_contents != nullptr && contents != expected_contents) {
-+        LOG(ERROR) << "[H40 V51 CURRENT] invalid contents in " << name;
++        LOG(ERROR) << "[OPLUS DECRYPT] parent CE key: invalid contents in " << name;
 +        return false;
 +    }
 +    if (reject_all_zero &&
 +        std::all_of(contents.begin(), contents.end(), [](char value) { return value == '\0'; })) {
-+        LOG(ERROR) << "[H40 V51 CURRENT] all-zero contents in " << name;
++        LOG(ERROR) << "[OPLUS DECRYPT] parent CE key: all-zero contents in " << name;
 +        return false;
 +    }
 +    return true;
@@ -726,7 +726,7 @@ index 7505e560451c24f50bf1d1615e37b1b9a1c3acf9..4ebfe10f3f0507e3a24476755dba94bb
 +    android::base::unique_fd root(TEMP_FAILURE_RETRY(
 +            open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)));
 +    if (root < 0) {
-+        PLOG(ERROR) << "[H40 V51 CURRENT] cannot open filesystem root";
++        PLOG(ERROR) << "[OPLUS DECRYPT] parent CE key: cannot open filesystem root";
 +        return OplusCurrentCeLayout::kInvalid;
 +    }
 +
@@ -760,7 +760,7 @@ index 7505e560451c24f50bf1d1615e37b1b9a1c3acf9..4ebfe10f3f0507e3a24476755dba94bb
 +    } else if (entries == legacy_none) {
 +        layout = OplusCurrentCeLayout::kDirectAesLegacyNone;
 +    } else {
-+        LOG(ERROR) << "[OPLUS V56 LAYOUT] unsupported user 0 CE key-directory schema";
++        LOG(ERROR) << "[OPLUS DECRYPT] CE layout: unsupported user 0 CE key-directory schema";
 +        return OplusCurrentCeLayout::kInvalid;
 +    }
 +
@@ -785,13 +785,13 @@ index 7505e560451c24f50bf1d1615e37b1b9a1c3acf9..4ebfe10f3f0507e3a24476755dba94bb
 +
 +bool fscrypt_unlock_user0_key_current_only(const std::string& secret_hex) {
 +    constexpr userid_t kUser = 0;
-+    LOG(INFO) << "[H40 V51 CURRENT] guarded parent-process CE install";
++    LOG(INFO) << "[OPLUS DECRYPT] parent CE key: guarded parent-process CE install";
 +    if (!fscrypt_is_native()) {
-+        LOG(ERROR) << "[H40 V51 CURRENT] native fscrypt is not active";
++        LOG(ERROR) << "[OPLUS DECRYPT] parent CE key: native fscrypt is not active";
 +        return false;
 +    }
 +    if (GetCePolicies().count(kUser) != 0) {
-+        LOG(ERROR) << "[H40 V51 CURRENT] user 0 CE policy already exists";
++        LOG(ERROR) << "[OPLUS DECRYPT] parent CE key: user 0 CE policy already exists";
 +        return false;
 +    }
 +    const OplusCurrentCeLayout layout = validate_h40_modern_user0_ce_layout();
@@ -799,12 +799,12 @@ index 7505e560451c24f50bf1d1615e37b1b9a1c3acf9..4ebfe10f3f0507e3a24476755dba94bb
 +
 +    auto auth = authentication_from_hex(secret_hex);
 +    if (!auth || auth->secret.empty()) {
-+        LOG(ERROR) << "[H40 V51 CURRENT] refusing empty or malformed SP-derived secret";
++        LOG(ERROR) << "[OPLUS DECRYPT] parent CE key: refusing empty or malformed SP-derived secret";
 +        return false;
 +    }
 +    EncryptionOptions options;
 +    if (!get_data_file_encryption_options(&options) || options.use_hw_wrapped_key) {
-+        LOG(ERROR) << "[H40 V51 CURRENT] layout requires a non-wrapped data key";
++        LOG(ERROR) << "[OPLUS DECRYPT] parent CE key: layout requires a non-wrapped data key";
 +        return false;
 +    }
 +
@@ -814,16 +814,16 @@ index 7505e560451c24f50bf1d1615e37b1b9a1c3acf9..4ebfe10f3f0507e3a24476755dba94bb
 +    const OplusCurrentCeLayout revalidated_layout =
 +            validate_h40_modern_user0_ce_layout();
 +    if (revalidated_layout != layout) {
-+        LOG(ERROR) << "[OPLUS V56 LAYOUT] user 0 CE schema changed during validation";
++        LOG(ERROR) << "[OPLUS DECRYPT] CE layout: user 0 CE schema changed during validation";
 +        return false;
 +    }
-+    LOG(INFO) << "[OPLUS V56 LAYOUT] validated " << h40_current_ce_layout_name(layout);
++    LOG(INFO) << "[OPLUS DECRYPT] CE layout: validated " << h40_current_ce_layout_name(layout);
 +    const std::string key_path =
 +            get_ce_key_current_path(get_ce_key_directory_path(kUser));
 +    KeyBuffer ce_key;
 +    if (!android::vold::retrieveKey(key_path, *auth, &ce_key)) return false;
 +    if (ce_key.size() != FSCRYPT_MAX_KEY_SIZE) {
-+        LOG(ERROR) << "[H40 V51 CURRENT] unexpected recovered CE key size " << ce_key.size();
++        LOG(ERROR) << "[OPLUS DECRYPT] parent CE key: unexpected recovered CE key size " << ce_key.size();
 +        return false;
 +    }
 +
@@ -831,10 +831,10 @@ index 7505e560451c24f50bf1d1615e37b1b9a1c3acf9..4ebfe10f3f0507e3a24476755dba94bb
 +    if (!install_storage_key(DATA_MNT_POINT, options, ce_key, &ce_policy)) return false;
 +    const auto inserted = GetCePolicies().emplace(kUser, ce_policy);
 +    if (!inserted.second) {
-+        LOG(ERROR) << "[H40 V51 CURRENT] CE policy insertion raced or duplicated";
++        LOG(ERROR) << "[OPLUS DECRYPT] parent CE key: CE policy insertion raced or duplicated";
 +        return false;
 +    }
-+    LOG(INFO) << "[H40 V51 CURRENT] installed user 0 CE key without key-directory mutation";
++    LOG(INFO) << "[OPLUS DECRYPT] parent CE key: installed user 0 CE key without key-directory mutation";
 +    return true;
 +}
 +
@@ -1117,9 +1117,9 @@ index 51fc4f62967c7ad6f5081cd00c94df3861b97646..f538f8930b5f998e033d8c383158e928
          // DeleteUpgradedKey(keymaster, upgraded_blob_file);
      if (!readFileToString(blob_file, &blob)) return KeymasterOperation();
      // }
-+    LOG(INFO) << "[H40 KMCOMPAT] begin: calling Keymaster begin for metadata blob";
++    LOG(INFO) << "[OPLUS DECRYPT] keymaster compatibility: begin: calling Keymaster begin for metadata blob";
      auto opHandle = keymaster.begin(blob, inParams, outParams);
-+    LOG(INFO) << "[H40 KMCOMPAT] begin: returned valid=" << static_cast<bool>(opHandle)
++    LOG(INFO) << "[OPLUS DECRYPT] keymaster compatibility: begin: returned valid=" << static_cast<bool>(opHandle)
 +               << " error=" << static_cast<int32_t>(opHandle.getErrorCode());
      if (!opHandle) return opHandle;
  
@@ -1133,9 +1133,9 @@ index 51fc4f62967c7ad6f5081cd00c94df3861b97646..f538f8930b5f998e033d8c383158e928
                                   const std::string& secdiscardable_hash) {
      std::string appId = secdiscardable_hash + auth.secret;
  
-+    LOG(INFO) << "[H40 KMCOMPAT] appId: acquiring storage-binding state";
++    LOG(INFO) << "[OPLUS DECRYPT] keymaster compatibility: appId: acquiring storage-binding state";
 +    auto& storage_binding_info = GetStorageBindingInfo();
-+    LOG(INFO) << "[H40 KMCOMPAT] appId: storage-binding state ready, state="
++    LOG(INFO) << "[OPLUS DECRYPT] keymaster compatibility: appId: storage-binding state ready, state="
 +               << static_cast<int32_t>(storage_binding_info.state);
      const std::lock_guard<std::mutex> scope_lock(storage_binding_info.guard);
      switch (storage_binding_info.state) {
@@ -1144,7 +1144,7 @@ index 51fc4f62967c7ad6f5081cd00c94df3861b97646..f538f8930b5f998e033d8c383158e928
              // noop
              break;
      }
-+    LOG(INFO) << "[H40 KMCOMPAT] appId: complete";
++    LOG(INFO) << "[OPLUS DECRYPT] keymaster compatibility: appId: complete";
      return appId;
  }
  
@@ -1152,16 +1152,16 @@ index 51fc4f62967c7ad6f5081cd00c94df3861b97646..f538f8930b5f998e033d8c383158e928
      std::string encryptedMessage;
      if (!readFileToString(dir + "/" + kFn_encrypted_key, &encryptedMessage)) return false;
      if (auth.usesKeymaster()) {
-+        LOG(INFO) << "[H40 KMCOMPAT] retrieve: constructing Keymaster";
++        LOG(INFO) << "[OPLUS DECRYPT] keymaster compatibility: retrieve: constructing Keymaster";
          Keymaster keymaster;
-+        LOG(INFO) << "[H40 KMCOMPAT] retrieve: constructor returned valid="
++        LOG(INFO) << "[OPLUS DECRYPT] keymaster compatibility: retrieve: constructor returned valid="
 +                   << static_cast<bool>(keymaster);
          if (!keymaster) return false;
          km::AuthorizationSet keyParams = beginParams(appId);
-+        LOG(INFO) << "[H40 KMCOMPAT] retrieve: starting metadata-key decrypt";
++        LOG(INFO) << "[OPLUS DECRYPT] keymaster compatibility: retrieve: starting metadata-key decrypt";
          if (!decryptWithKeymasterKey(keymaster, dir, keyParams, encryptedMessage, key))
              return false;
-+        LOG(INFO) << "[H40 KMCOMPAT] retrieve: metadata-key decrypt complete";
++        LOG(INFO) << "[OPLUS DECRYPT] keymaster compatibility: retrieve: metadata-key decrypt complete";
      } else {
          if (!decryptWithoutKeymaster(appId, encryptedMessage, key)) return false;
      }
@@ -1274,16 +1274,16 @@ index 4781d9114792e98d566a153bd279ea52501b9c1d..4402588ee5bc1dcee744f68a999ce1b1
 -    memset_s(vec.data(), 0, vec.size());
 +static bool IsUsableHidlKeyBlob(const Ks2KeyBlobView& view, const char* operation) {
 +    if (view.malformedPrefix) {
-+        LOG(ERROR) << "[H40 BLOBPREFIX] " << operation << ": malformed pKMblob prefix";
++        LOG(ERROR) << "[OPLUS DECRYPT] key blob: " << operation << ": malformed pKMblob prefix";
 +        return false;
 +    }
 +    if (view.softKeyMint) {
-+        LOG(ERROR) << "[H40 BLOBPREFIX] " << operation
++        LOG(ERROR) << "[OPLUS DECRYPT] key blob: " << operation
 +                   << ": software-KeyMint blob unsupported on QTI HIDL";
 +        return false;
 +    }
 +    if (view.raw.empty()) {
-+        LOG(ERROR) << "[H40 BLOBPREFIX] " << operation << ": empty HIDL key blob";
++        LOG(ERROR) << "[OPLUS DECRYPT] key blob: " << operation << ": empty HIDL key blob";
 +        return false;
 +    }
 +    return true;
@@ -1565,21 +1565,21 @@ index 4781d9114792e98d566a153bd279ea52501b9c1d..4402588ee5bc1dcee744f68a999ce1b1
  Keymaster::Keymaster() {
 -    ::ndk::SpAIBinder binder(AServiceManager_waitForService(keystore2_service_name));
 -    auto keystore2Service = ks2::IKeystoreService::fromBinder(binder);
-+    LOG(INFO) << "[H40 KMCOMPAT] constructor: enumerating Keymaster 4.x devices";
++    LOG(INFO) << "[OPLUS DECRYPT] keymaster compatibility: constructor: enumerating Keymaster 4.x devices";
 +    auto devices = KmDevice::enumerateAvailableDevices();
-+    LOG(INFO) << "[H40 KMCOMPAT] constructor: enumerated " << devices.size() << " device(s)";
++    LOG(INFO) << "[OPLUS DECRYPT] keymaster compatibility: constructor: enumerated " << devices.size() << " device(s)";
 +    if (devices.empty()) {
-+        LOG(ERROR) << "[H40 KMCOMPAT] constructor: no Keymaster devices";
++        LOG(ERROR) << "[OPLUS DECRYPT] keymaster compatibility: constructor: no Keymaster devices";
 +        return;
 +    }
  
 -    if (!keystore2Service) {
 -        LOG(ERROR) << "Vold unable to connect to keystore2.";
 +    if (!hmacKeyGenerated) {
-+        LOG(INFO) << "[H40 KMCOMPAT] constructor: starting standard HMAC agreement";
++        LOG(INFO) << "[OPLUS DECRYPT] keymaster compatibility: constructor: starting standard HMAC agreement";
 +        KmDevice::performHmacKeyAgreement(devices);
 +        hmacKeyGenerated = true;
-+        LOG(INFO) << "[H40 KMCOMPAT] constructor: HMAC agreement complete";
++        LOG(INFO) << "[OPLUS DECRYPT] keymaster compatibility: constructor: HMAC agreement complete";
 +    }
 +
 +    for (auto& dev : devices) {
@@ -1589,7 +1589,7 @@ index 4781d9114792e98d566a153bd279ea52501b9c1d..4402588ee5bc1dcee744f68a999ce1b1
 +        }
 +    }
 +    if (!mDevice) {
-+        LOG(ERROR) << "[H40 KMCOMPAT] constructor: no non-StrongBox Keymaster device";
++        LOG(ERROR) << "[OPLUS DECRYPT] keymaster compatibility: constructor: no non-StrongBox Keymaster device";
          return;
      }
  
@@ -1608,7 +1608,7 @@ index 4781d9114792e98d566a153bd279ea52501b9c1d..4402588ee5bc1dcee744f68a999ce1b1
 -        LOG(ERROR) << "Vold unable to get security level from keystore2.";
 +    const auto& version = mDevice->halVersion();
 +    mSecurityLevel = version.securityLevel;
-+    LOG(INFO) << "[H40 KMCOMPAT] constructor: selected " << version.keymasterName
++    LOG(INFO) << "[OPLUS DECRYPT] keymaster compatibility: constructor: selected " << version.keymasterName
 +               << " from " << version.authorName
 +               << ", security=" << static_cast<int32_t>(version.securityLevel)
 +               << ", HAL=" << mDevice->descriptor() << "/" << mDevice->instanceName();
@@ -1670,13 +1670,13 @@ index 4781d9114792e98d566a153bd279ea52501b9c1d..4402588ee5bc1dcee744f68a999ce1b1
 -            .alias = std::nullopt,
 -            .nspace = VOLD_NAMESPACE,
 +    if (!mDevice) {
-+        LOG(ERROR) << "[H40 BLOBPREFIX] export: no Keymaster device";
++        LOG(ERROR) << "[OPLUS DECRYPT] key blob: export: no Keymaster device";
 +        return false;
 +    }
 +
 +    const std::string storedBlob(kmKey.begin(), kmKey.end());
 +    const auto blobView = UnwrapKs2KeyBlob(storedBlob);
-+    LOG(INFO) << "[H40 BLOBPREFIX] export: storedLen=" << storedBlob.size()
++    LOG(INFO) << "[OPLUS DECRYPT] key blob: export: storedLen=" << storedBlob.size()
 +              << " prefixPresent=" << blobView.prefixPresent
 +              << " softKeyMint=" << blobView.softKeyMint
 +              << " malformedPrefix=" << blobView.malformedPrefix
@@ -1708,12 +1708,12 @@ index 4781d9114792e98d566a153bd279ea52501b9c1d..4402588ee5bc1dcee744f68a999ce1b1
 +    auto error = mDevice->exportKey(km_hidl::KeyFormat::RAW, keyBlob, hidl_vec<uint8_t>(),
 +                                    hidl_vec<uint8_t>(), hidlCb);
 +    if (!error.isOk()) {
-+        LOG(ERROR) << "[H40 BLOBPREFIX] export result: transport failure";
++        LOG(ERROR) << "[OPLUS DECRYPT] key blob: export result: transport failure";
 +        return false;
 +    }
  
 -    // TODO b/185811713 store the upgraded key blob if provided and delete the old key blob.
-+    LOG(INFO) << "[H40 BLOBPREFIX] export result: error=" << static_cast<int32_t>(km_error)
++    LOG(INFO) << "[OPLUS DECRYPT] key blob: export result: error=" << static_cast<int32_t>(km_error)
 +              << " exportedLen=" << exportedKey.size();
 +    if (km_error != km_hidl::ErrorCode::OK || exportedKey.empty()) return false;
  
@@ -1754,7 +1754,7 @@ index 4781d9114792e98d566a153bd279ea52501b9c1d..4402588ee5bc1dcee744f68a999ce1b1
 +    }
 +
 +    auto oldBlobView = UnwrapKs2KeyBlob(oldKey);
-+    LOG(INFO) << "[H40 BLOBPREFIX] upgrade: storedLen=" << oldKey.size()
++    LOG(INFO) << "[OPLUS DECRYPT] key blob: upgrade: storedLen=" << oldKey.size()
 +               << " prefixPresent=" << oldBlobView.prefixPresent
 +               << " softKeyMint=" << oldBlobView.softKeyMint
 +               << " hidlLen=" << oldBlobView.raw.size();
@@ -1781,7 +1781,7 @@ index 4781d9114792e98d566a153bd279ea52501b9c1d..4402588ee5bc1dcee744f68a999ce1b1
 +            ++upgradeMacLengthCount;
 +        }
 +    }
-+    LOG(ERROR) << "[H40 UPGRADEPARAMS] upgrade: keymintParams=" << inParams.size()
++    LOG(ERROR) << "[OPLUS DECRYPT] key upgrade: upgrade: keymintParams=" << inParams.size()
 +               << " hidlParams=" << hidlParams.size()
 +               << " purposeCount=" << upgradePurposeCount
 +               << " appIdCount=" << upgradeAppIdCount
@@ -1800,7 +1800,7 @@ index 4781d9114792e98d566a153bd279ea52501b9c1d..4402588ee5bc1dcee744f68a999ce1b1
 +            std::string rawUpgraded(
 +                    reinterpret_cast<const char*>(&upgradedKeyBlob[0]), upgradedKeyBlob.size());
 +            *newKey = WrapKs2HardwareKeyBlob(rawUpgraded);
-+            LOG(INFO) << "[H40 BLOBPREFIX] upgrade: rawUpgradedLen=" << rawUpgraded.size()
++            LOG(INFO) << "[OPLUS DECRYPT] key blob: upgrade: rawUpgradedLen=" << rawUpgraded.size()
 +                       << " returnedStoredLen=" << newKey->size();
 +        }
      };
@@ -1898,7 +1898,7 @@ index 4781d9114792e98d566a153bd279ea52501b9c1d..4402588ee5bc1dcee744f68a999ce1b1
 +    LOG(DEBUG) << "[Keymaster] begin: Purpose = " << static_cast<int32_t>(purpose);
 +
 +    auto blobView = UnwrapKs2KeyBlob(key);
-+    LOG(INFO) << "[H40 BLOBPREFIX] begin: storedLen=" << key.size()
++    LOG(INFO) << "[OPLUS DECRYPT] key blob: begin: storedLen=" << key.size()
 +               << " prefixPresent=" << blobView.prefixPresent
 +               << " softKeyMint=" << blobView.softKeyMint
 +               << " hidlLen=" << blobView.raw.size();
@@ -1937,7 +1937,7 @@ index 4781d9114792e98d566a153bd279ea52501b9c1d..4402588ee5bc1dcee744f68a999ce1b1
 +        beginHidlParams.push_back(param);
 +    }
 +
-+    LOG(INFO) << "[H40 BLOBPROBE] begin bridge: purpose="
++    LOG(INFO) << "[OPLUS DECRYPT] key blob probe: begin bridge: purpose="
 +               << static_cast<int32_t>(purpose)
 +               << " storedBlobLen=" << key.size()
 +               << " hidlBlobLen=" << blobView.raw.size()
@@ -1964,7 +1964,7 @@ index 4781d9114792e98d566a153bd279ea52501b9c1d..4402588ee5bc1dcee744f68a999ce1b1
 +                    characteristicsSwCount = chars.softwareEnforced.size();
 +                }
 +            });
-+    LOG(INFO) << "[H40 BLOBPROBE] characteristics: transportOk="
++    LOG(INFO) << "[OPLUS DECRYPT] key blob probe: characteristics: transportOk="
 +               << characteristicsTransport.isOk()
 +               << " error=" << static_cast<int32_t>(characteristicsError)
 +               << " hwParams=" << characteristicsHwCount
@@ -2019,7 +2019,7 @@ index 4781d9114792e98d566a153bd279ea52501b9c1d..4402588ee5bc1dcee744f68a999ce1b1
 +            }
 +            upgradeParams.push_back(param);
 +        }
-+        LOG(ERROR) << "[H40 UPGRADEPARAMS] begin: keymintParams=" << inParams.size()
++        LOG(ERROR) << "[OPLUS DECRYPT] key upgrade: begin: keymintParams=" << inParams.size()
 +                   << " filteredParams=" << upgradeParams.size()
 +                   << " removedPurpose=" << upgradePurposeCount;
 +        if (upgradeKey(key, upgradeParams, &upgradedKey)) {
@@ -2073,7 +2073,7 @@ index 4781d9114792e98d566a153bd279ea52501b9c1d..4402588ee5bc1dcee744f68a999ce1b1
 +           static_cast<int32_t>(purpose), key.size(), inParams.size());
 +
 +    auto blobView = UnwrapKs2KeyBlob(key);
-+    LOG(INFO) << "[H40 BLOBPREFIX] auth begin: storedLen=" << key.size()
++    LOG(INFO) << "[OPLUS DECRYPT] key blob: auth begin: storedLen=" << key.size()
 +               << " prefixPresent=" << blobView.prefixPresent
 +               << " softKeyMint=" << blobView.softKeyMint
 +               << " hidlLen=" << blobView.raw.size();
@@ -2095,7 +2095,7 @@ index 4781d9114792e98d566a153bd279ea52501b9c1d..4402588ee5bc1dcee744f68a999ce1b1
 +        }
 +        beginHidlParams.push_back(param);
      }
-+    LOG(INFO) << "[H40 BLOBPROBE] auth begin bridge: purpose="
++    LOG(INFO) << "[OPLUS DECRYPT] key blob probe: auth begin bridge: purpose="
 +               << static_cast<int32_t>(purpose)
 +               << " storedBlobLen=" << key.size()
 +               << " hidlBlobLen=" << blobView.raw.size()
@@ -2147,7 +2147,7 @@ index 4781d9114792e98d566a153bd279ea52501b9c1d..4402588ee5bc1dcee744f68a999ce1b1
 +            }
 +            upgradeParams.push_back(param);
 +        }
-+        LOG(ERROR) << "[H40 UPGRADEPARAMS] auth begin: keymintParams=" << inParams.size()
++        LOG(ERROR) << "[OPLUS DECRYPT] key upgrade: auth begin: keymintParams=" << inParams.size()
 +                   << " filteredParams=" << upgradeParams.size()
 +                   << " removedPurpose=" << upgradePurposeCount;
 +        if (upgradeKey(key, upgradeParams, &upgradedKey)) {

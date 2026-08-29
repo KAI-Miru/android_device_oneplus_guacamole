@@ -155,12 +155,12 @@ jobs:
           (
             cd "$patch_dir"
             sha256sum --check <<'EOF'
-          c196b8bd497039ae9ec7587212d47e0fe105867982b4ee06a02bbe30507b464e  recovery.patch
-          a79e9a761ded5640f4413c48191fee3bc511e7eb15f316cbac8aa0f6b264298d  recovery-no-credential.patch
-          beaee1382a16e14a3d7bc238e357e1953c774f24ede6ec07f445c853436c477a  recovery-password-probe.patch
-          45e38fa9fd62af7854ec6b109812d53c6edee70c103403b400b2301ad045e507  recovery-setup-de-ce-guard.patch
-          034b64defe6e7ff10b91e8948e0f2ac19da3a7f434bb03e9e6351fba283f2cda  vold.patch
-          ee2472e7bb81f320d2fd473cedadc3db2f475fd15551beb3c4948d73522e7199  vold-no-credential.patch
+          ccd7231d66b3599203c8fde236ec4f9ca90bab3118239d67f5547f3c0032dbe5  recovery.patch
+          491f78e08921259749cc1333191ba12c0a73d86bf504822f1f445056870a24f5  recovery-no-credential.patch
+          91033f9fb2238c54bd88e0cb50f8d684e8ffcd3c3491ca9dba635d0688931b0f  recovery-password-probe.patch
+          214fb48a0372dfef489235ab693024a1a15dac7d676398883a51dfc781d53192  recovery-setup-de-ce-guard.patch
+          b1664fe7e29b500310e4e4fb6a3f108ddcbe399d50ce66497d58c3fc627b07dd  vold.patch
+          077d150773b512f110b202472e7a4558f4bc7171b5a992417523be0b6490e86b  vold-no-credential.patch
           0cd8269b20fa83fcfff42eee02a6a0be8a0d8a74bb2ee9baba8449dc26441523  security.patch
           bc1398b4901403a33d7ad80a171ba95974ba2c938558bc10b69ff350e8850895  binder.patch
           EOF
@@ -184,13 +184,16 @@ jobs:
           for repository in bootable/recovery system/vold system/security frameworks/native; do
             git -C "$repository" diff --cached --check
           done
-          grep -Fq '[H40 PORTIDENTITY] using mounted dynamic system' bootable/recovery/oplus_h40_decrypt.cpp
-          grep -Fq '[OPLUS V56 LAYOUT]' system/vold/FsCrypt.cpp
-          grep -Fq '[OPLUS V57 NOCREDENTIAL]' bootable/recovery/oplus_h40_decrypt.cpp
-          grep -Fq '[OPLUS V58 PWDPROBE]' bootable/recovery/oplus_h40_decrypt.cpp
+          grep -Fq '[OPLUS DECRYPT] system identity: using mounted dynamic system' bootable/recovery/oplus_h40_decrypt.cpp
+          grep -Fq '[OPLUS DECRYPT] CE layout:' system/vold/FsCrypt.cpp
+          grep -Fq '[OPLUS DECRYPT] no credential:' bootable/recovery/oplus_h40_decrypt.cpp
+          grep -Fq '[OPLUS DECRYPT] password state: validated .pwd protector; OEM password-type call permitted' bootable/recovery/oplus_h40_decrypt.cpp
           grep -Fq 'ProbeUser0PasswordProtector' bootable/recovery/oplus_h40_decrypt.cpp
-          grep -Fq '[OPLUS V59 SETUPGUARD]' bootable/recovery/oplus_h40_decrypt.cpp
-          grep -Fq '[OPLUS V57 NOCREDENTIAL]' system/vold/FsCrypt.cpp
+          grep -Fq '[OPLUS DECRYPT] setup guard:' bootable/recovery/oplus_h40_decrypt.cpp
+          grep -Fq '[OPLUS DECRYPT] password state: OEM reports no active credential; treating retained .pwd as advisory metadata' bootable/recovery/oplus_h40_decrypt.cpp
+          grep -Fq 'user0_state->no_credential = raw_password_type == -1;' bootable/recovery/oplus_h40_decrypt.cpp
+          ! grep -Fq 'OEM probe contradicted the validated .pwd protector' bootable/recovery/oplus_h40_decrypt.cpp
+          grep -Fq '[OPLUS DECRYPT] no credential:' system/vold/FsCrypt.cpp
           grep -Fq 'H40_RECOVERY_KEYSTORE2_PERMISSION_SHIM_V51' system/security/keystore2/src/utils.rs
           grep -Fq 'H40_RECOVERY_BINDER_STABILITY_V0_V52' frameworks/native/libs/binder/Parcel.cpp
           {
@@ -321,8 +324,8 @@ jobs:
           strings -a "$recovery_root/system/bin/recovery" > "$report/recovery.strings"
           strings -a "$recovery_root/system/bin/keystore2" > "$report/keystore2.strings"
           strings -a "$recovery_root/system/lib64/libbinder.so" > "$report/libbinder.strings"
-          grep -Fq '[H40 V51 PARENT]' "$report/recovery.strings"
-          grep -Fq '[OPLUS V56 LAYOUT]' "$report/recovery.strings"
+          grep -Fq '[OPLUS DECRYPT] parent key install:' "$report/recovery.strings"
+          grep -Fq '[OPLUS DECRYPT] CE layout:' "$report/recovery.strings"
           grep -Fq 'H40_RECOVERY_KEYSTORE2_PERMISSION_SHIM_V51' "$report/keystore2.strings"
           grep -Fq 'H40_RECOVERY_BINDER_STABILITY_V0_V52' "$report/libbinder.strings"
 
