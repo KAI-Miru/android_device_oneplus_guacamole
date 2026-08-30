@@ -162,7 +162,7 @@ index 0bda14b..48d2505 100755
  	}
  
 +	std::vector<std::string> dynamic_partition_bases;
-+	for (const auto* partition : Partitions) {
++	for (auto* partition : Partitions) {
 +		if (partition->Is_Super) {
 +			dynamic_partition_bases.push_back(
 +				Get_Bare_Partition_Name(partition->Get_Mount_Point()));
