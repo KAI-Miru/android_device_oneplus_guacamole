@@ -1,0 +1,240 @@
+diff --git a/oplus_h40_decrypt.cpp b/oplus_h40_decrypt.cpp
+index f0bda0d..6a16e74 100644
+--- a/oplus_h40_decrypt.cpp
++++ b/oplus_h40_decrypt.cpp
+@@ -67,10 +67,21 @@ constexpr const char* kCredentialServices[] = {
+         "vendor.gatekeeper-1-0",
+         "keystore2",
+ };
++constexpr const char* kDataBackedServices[] = {
++        "gatekeeperd",
++        "keystore2",
++        "vendor.gatekeeper-1-0",
++        "hal_cryptoeng_oplus",
++        "keymaster-4-0",
++        "qseecomd",
++};
+ constexpr char kAuthorizationService[] = "android.security.authorization";
+ constexpr int kServiceWaitPolls = 150;
+ constexpr int kStableServicePolls = 5;
++constexpr int kUnmountServiceWaitPolls = 60;
++constexpr int kUnmountStableServicePolls = 3;
+ constexpr useconds_t kServicePollIntervalUs = 100000;
++constexpr useconds_t kUnmountSettleIntervalUs = 200000;
+ 
+ using SetupDeCeFn = bool (*)(int);
+ using GetPasswordTypeFn = int (*)(int);
+@@ -135,6 +146,7 @@ struct RuntimeState {
+     Phase phase = Phase::kIdle;
+     bool data_mapped = false;
+     bool user0_ce_ready = false;
++    bool data_services_quiesced = false;
+     User0State user0;
+ };
+ 
+@@ -562,6 +574,35 @@ bool WaitForStoppedGatekeeper() {
+     return false;
+ }
+ 
++template <std::size_t N>
++bool WaitForQuiescentServices(const char* const (&services)[N]) {
++    int stable_polls = 0;
++    for (int poll = 0; poll < kUnmountServiceWaitPolls; ++poll) {
++        bool all_quiescent = true;
++        for (const char* service : services) {
++            const std::string state = ReadProperty(std::string("init.svc.") + service);
++            if (!state.empty() && state != "stopped" && state != "disabled") {
++                all_quiescent = false;
++                break;
++            }
++        }
++        if (all_quiescent) {
++            if (++stable_polls >= kUnmountStableServicePolls) return true;
++        } else {
++            stable_polls = 0;
++        }
++        usleep(kServicePollIntervalUs);
++    }
++
++    LOGINFO("[OPLUS DECRYPT] data unmount: credential services did not quiesce in time\n");
++    for (const char* service : services) {
++        const std::string state = ReadProperty(std::string("init.svc.") + service);
++        LOGINFO("[OPLUS DECRYPT] data unmount: init.svc.%s=%s\n",
++                service, state.c_str());
++    }
++    return false;
++}
++
+ bool WaitForPropertyValue(const char* name, const char* expected, const char* phase) {
+     for (int poll = 0; poll < kServiceWaitPolls; ++poll) {
+         if (ReadProperty(name) == expected) return true;
+@@ -1494,5 +1535,35 @@ Result CompleteNoCredentialHandoff(bool decrypt_succeeded) {
+     return Result::kSuccess;
+ }
+ 
++bool PrepareDataUnmount() {
++    std::lock_guard<std::mutex> lock(GetRuntimeMutex());
++    RuntimeState& state = GetRuntimeState();
++
++    // TWRP also unmounts /data during early setup and failed credential paths.
++    // Quiescing the OEM stack there would break the active decrypt attempt, so
++    // this hook is deliberately inert until CE decryption has been proven.
++    if (state.phase != Phase::kUnlocked || !state.data_mapped) return true;
++    if (state.data_services_quiesced) return true;
++
++    LOGINFO("[OPLUS DECRYPT] data unmount: quiescing OEM credential services\n");
++    bool requests_succeeded = true;
++    requests_succeeded &= SetProperty("enable.qseecomd.service", "0");
++    requests_succeeded &= SetProperty("vendor.data.mounted", "0");
++    for (const char* service : kDataBackedServices) {
++        requests_succeeded &= SetProperty("ctl.stop", service);
++    }
++
++    const bool services_quiescent = WaitForQuiescentServices(kDataBackedServices);
++    sync();
++    // Remove_MTP_Storage() is delivered over TWRP's MTP message pipe. Give the
++    // server a bounded interval to release its /data descriptors as well.
++    usleep(kUnmountSettleIntervalUs);
++
++    if (!requests_succeeded || !services_quiescent) return false;
++    state.data_services_quiesced = true;
++    LOGINFO("[OPLUS DECRYPT] data unmount: OEM credential services stopped\n");
++    return true;
++}
++
+ }  // namespace oplus_h40
+ }  // namespace twrp
+diff --git a/oplus_h40_decrypt.hpp b/oplus_h40_decrypt.hpp
+index 6b9275c..09c8b30 100644
+--- a/oplus_h40_decrypt.hpp
++++ b/oplus_h40_decrypt.hpp
+@@ -34,6 +34,7 @@ Result MountMetadataAndPrepareDe(const std::string& mount_point, User0State* use
+ Result DecryptUser(const std::string& password, int user_id);
+ Result CompleteNoCredentialHandoff(bool decrypt_succeeded);
+ Result CompleteModernHandoff(bool decrypt_succeeded);
++bool PrepareDataUnmount();
+ 
+ }  // namespace oplus_h40
+ }  // namespace twrp
+diff --git a/partition.cpp b/partition.cpp
+index 184cb16..17c359c 100755
+--- a/partition.cpp
++++ b/partition.cpp
+@@ -54,6 +54,9 @@
+ 	#include "cryptfs.h"
+ 	#include "Decrypt.h"
+ #endif
++#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
++	#include "oplus_h40_decrypt.hpp"
++#endif
+ extern "C" {
+ 	#include "mtdutils/mtdutils.h"
+ 	#include "mtdutils/mounts.h"
+@@ -1745,6 +1748,14 @@ bool TWPartition::UnMount(bool Display_Error, int flags) {
+ 		if (Is_Storage && MTP_Storage_ID > 0)
+ 			PartitionManager.Remove_MTP_Storage(MTP_Storage_ID);
+ 
++#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
++		// MTP detachment is asynchronous. Once user 0 is unlocked, also stop
++		// the OEM credential services whose working directories and GPFS files
++		// live below /data before asking the kernel to unmount it.
++		if (Mount_Point == "/data")
++			twrp::oplus_h40::PrepareDataUnmount();
++#endif
++
+ 		if (!Symlink_Mount_Point.empty())
+ 			umount2(Symlink_Mount_Point.c_str(), flags);
+ 
+diff --git a/partitionmanager.cpp b/partitionmanager.cpp
+index 0bda14b..48d2505 100755
+--- a/partitionmanager.cpp
++++ b/partitionmanager.cpp
+@@ -33,6 +33,7 @@
+ #include <zlib.h>
+ #include <iostream>
+ #include <iomanip>
++#include <sstream>
+ #include <sys/wait.h>
+ #include <linux/fs.h>
+ #include <sys/mount.h>
+@@ -4065,11 +4066,80 @@ bool TWPartitionManager::Check_Pending_Merges() {
+ 		return false;
+ 	}
+ 
++	std::vector<std::string> dynamic_partition_bases;
++	for (const auto* partition : Partitions) {
++		if (partition->Is_Super) {
++			dynamic_partition_bases.push_back(
++				Get_Bare_Partition_Name(partition->Get_Mount_Point()));
++		}
++	}
++
+ 	if (!Unmap_Super_Devices()) {
+ 		LOGERR("Unable to unmap dynamic partitions.\n");
+ 		return false;
+ 	}
+ 
++	// Android 12's HandleImminentDataWipe() maps every snapshot partition
++	// before it examines the update state. After a manual repartition, an
++	// unmounted first-stage mapping can therefore collide with its own retry
++	// (DM_DEV_CREATE/EEXIST) and prevent Format Data from ever reaching mkfs.
++	// First prove the snapshot metadata is readable, then handle only states
++	// that are safe before the legacy mapper is entered.
++	constexpr char kSnapshotStatePath[] = "/metadata/ota/state";
++	if (access(kSnapshotStatePath, F_OK) != 0) {
++		if (errno == ENOENT) {
++			LOGINFO("[TWRP SNAPSHOT] no persisted virtual A/B update; data wipe may continue\n");
++			return true;
++		}
++		LOGERR("[TWRP SNAPSHOT] cannot inspect %s: %s\n",
++			kSnapshotStatePath, strerror(errno));
++		return false;
++	}
++
++	std::ostringstream snapshot_dump;
++	if (!sm->Dump(snapshot_dump)) {
++		LOGERR("[TWRP SNAPSHOT] persisted virtual A/B state is unreadable\n");
++		return false;
++	}
++
++	const android::snapshot::UpdateState update_state = sm->GetUpdateState();
++	if (update_state == android::snapshot::UpdateState::None) {
++		LOGINFO("[TWRP SNAPSHOT] no active virtual A/B update; data wipe may continue\n");
++		return true;
++	}
++	if (update_state == android::snapshot::UpdateState::Initiated) {
++		LOGINFO("[TWRP SNAPSHOT] cancelling pre-reboot virtual A/B update before data wipe\n");
++		if (!sm->CancelUpdate()) {
++			LOGERR("[TWRP SNAPSHOT] unable to cancel pre-reboot virtual A/B update\n");
++			return false;
++		}
++		return true;
++	}
++
++	if (update_state == android::snapshot::UpdateState::Unverified) {
++		constexpr const char* kSlotSuffixes[] = { "_a", "_b" };
++		for (const std::string& base : dynamic_partition_bases) {
++			for (const char* suffix : kSlotSuffixes) {
++				const std::string name = base + suffix;
++				const std::string path = "/dev/block/mapper/" + name;
++				struct stat status = {};
++				if (lstat(path.c_str(), &status) != 0) {
++					if (errno == ENOENT) continue;
++					LOGERR("[TWRP SNAPSHOT] cannot inspect mapper %s: %s\n",
++						path.c_str(), strerror(errno));
++					return false;
++				}
++
++				LOGINFO("[TWRP SNAPSHOT] removing stale recovery mapping before merge check: %s\n",
++					name.c_str());
++				if (!DestroyLogicalPartition(name)) {
++					LOGERR("[TWRP SNAPSHOT] stale mapping is still busy: %s\n", name.c_str());
++					return false;
++				}
++			}
++		}
++	}
++
+ 	auto callback = [&]() -> void {
+ 		double progress;
+ 		sm->GetUpdateState(&progress);

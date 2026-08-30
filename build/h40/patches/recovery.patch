@@ -1,5 +1,5 @@
 diff --git a/Android.mk b/Android.mk
-index 383adca55ab51a331df5236366d6e4dfbd5172bc..c83b5419b565e9330956912a2b2c317b2f2d3b17 100644
+index e949d035522cd1df7d7e882a7758f3ff2c2516bd..d93531f483b45d6623b1dae00cef2bbf54af088d 100644
 --- a/Android.mk
 +++ b/Android.mk
 @@ -335,6 +335,13 @@ endif
@@ -40,7 +40,7 @@ index 383adca55ab51a331df5236366d6e4dfbd5172bc..c83b5419b565e9330956912a2b2c317b
  
 diff --git a/oplus_h40_credential_client.cpp b/oplus_h40_credential_client.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..ed40857cf8f8fb4af613e2f325012cde649bd26d
+index 0000000000000000000000000000000000000000..7c0520140a74a763a944e7bdda28aa50a4b93403
 --- /dev/null
 +++ b/oplus_h40_credential_client.cpp
 @@ -0,0 +1,611 @@
@@ -688,7 +688,7 @@ index 0000000000000000000000000000000000000000..eef7d3b98eb03962ed65b137a55e7861
 +}  // namespace twrp
 diff --git a/oplus_h40_credential_helper.cpp b/oplus_h40_credential_helper.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..63ae5bad7aca486042fc99678016f7f764165d63
+index 0000000000000000000000000000000000000000..74b30a57c05de7b9537dead5a736ec19e1843551
 --- /dev/null
 +++ b/oplus_h40_credential_helper.cpp
 @@ -0,0 +1,764 @@
@@ -1597,10 +1597,10 @@ index 0000000000000000000000000000000000000000..45dcc30b55502ed78022479d95eee8f3
 +}  // namespace twrp
 diff --git a/oplus_h40_decrypt.cpp b/oplus_h40_decrypt.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..10c425e4dda3a766d85992d3cd4a27ce8d00de00
+index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587fccc1312
 --- /dev/null
 +++ b/oplus_h40_decrypt.cpp
-@@ -0,0 +1,1240 @@
+@@ -0,0 +1,1169 @@
 +#include "oplus_h40_decrypt.hpp"
 +
 +#include <android/binder_auto_utils.h>
@@ -1667,21 +1667,10 @@ index 0000000000000000000000000000000000000000..10c425e4dda3a766d85992d3cd4a27ce
 +        "vendor.gatekeeper-1-0",
 +        "keystore2",
 +};
-+constexpr const char* kDataBackedServices[] = {
-+        "gatekeeperd",
-+        "keystore2",
-+        "vendor.gatekeeper-1-0",
-+        "hal_cryptoeng_oplus",
-+        "keymaster-4-0",
-+        "qseecomd",
-+};
 +constexpr char kAuthorizationService[] = "android.security.authorization";
 +constexpr int kServiceWaitPolls = 150;
 +constexpr int kStableServicePolls = 5;
-+constexpr int kUnmountServiceWaitPolls = 60;
-+constexpr int kUnmountStableServicePolls = 3;
 +constexpr useconds_t kServicePollIntervalUs = 100000;
-+constexpr useconds_t kUnmountSettleIntervalUs = 200000;
 +
 +using SetupDeCeFn = bool (*)(int);
 +using GetPasswordTypeFn = int (*)(int);
@@ -1710,7 +1699,6 @@ index 0000000000000000000000000000000000000000..10c425e4dda3a766d85992d3cd4a27ce
 +    Phase phase = Phase::kIdle;
 +    bool data_mapped = false;
 +    bool user0_ce_ready = false;
-+    bool data_services_quiesced = false;
 +    User0State user0;
 +};
 +
@@ -2135,35 +2123,6 @@ index 0000000000000000000000000000000000000000..10c425e4dda3a766d85992d3cd4a27ce
 +    }
 +    LOGERR("[OPLUS DECRYPT] gatekeeperd did not stop before metadata mapping (state=%s)\n",
 +           ReadProperty("init.svc.gatekeeperd").c_str());
-+    return false;
-+}
-+
-+template <std::size_t N>
-+bool WaitForQuiescentServices(const char* const (&services)[N]) {
-+    int stable_polls = 0;
-+    for (int poll = 0; poll < kUnmountServiceWaitPolls; ++poll) {
-+        bool all_quiescent = true;
-+        for (const char* service : services) {
-+            const std::string state = ReadProperty(std::string("init.svc.") + service);
-+            if (!state.empty() && state != "stopped" && state != "disabled") {
-+                all_quiescent = false;
-+                break;
-+            }
-+        }
-+        if (all_quiescent) {
-+            if (++stable_polls >= kUnmountStableServicePolls) return true;
-+        } else {
-+            stable_polls = 0;
-+        }
-+        usleep(kServicePollIntervalUs);
-+    }
-+
-+    LOGINFO("[OPLUS DECRYPT] data unmount: credential services did not quiesce in time\n");
-+    for (const char* service : services) {
-+        const std::string state = ReadProperty(std::string("init.svc.") + service);
-+        LOGINFO("[OPLUS DECRYPT] data unmount: init.svc.%s=%s\n",
-+                service, state.c_str());
-+    }
 +    return false;
 +}
 +
@@ -2809,44 +2768,14 @@ index 0000000000000000000000000000000000000000..10c425e4dda3a766d85992d3cd4a27ce
 +    return Result::kSuccess;
 +}
 +
-+bool PrepareDataUnmount() {
-+    std::lock_guard<std::mutex> lock(GetRuntimeMutex());
-+    RuntimeState& state = GetRuntimeState();
-+
-+    // TWRP also unmounts /data during early setup and failed credential paths.
-+    // Quiescing the OEM stack there would break the active decrypt attempt, so
-+    // this hook is deliberately inert until CE decryption has been proven.
-+    if (state.phase != Phase::kUnlocked || !state.data_mapped) return true;
-+    if (state.data_services_quiesced) return true;
-+
-+    LOGINFO("[OPLUS DECRYPT] data unmount: quiescing OEM credential services\n");
-+    bool requests_succeeded = true;
-+    requests_succeeded &= SetProperty("enable.qseecomd.service", "0");
-+    requests_succeeded &= SetProperty("vendor.data.mounted", "0");
-+    for (const char* service : kDataBackedServices) {
-+        requests_succeeded &= SetProperty("ctl.stop", service);
-+    }
-+
-+    const bool services_quiescent = WaitForQuiescentServices(kDataBackedServices);
-+    sync();
-+    // Remove_MTP_Storage() is delivered over TWRP's MTP message pipe. Give the
-+    // server a bounded interval to release its /data descriptors as well.
-+    usleep(kUnmountSettleIntervalUs);
-+
-+    if (!requests_succeeded || !services_quiescent) return false;
-+    state.data_services_quiesced = true;
-+    LOGINFO("[OPLUS DECRYPT] data unmount: OEM credential services stopped\n");
-+    return true;
-+}
-+
 +}  // namespace oplus_h40
 +}  // namespace twrp
 diff --git a/oplus_h40_decrypt.hpp b/oplus_h40_decrypt.hpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..f92e964873d7fbe9ff58f871646438a3df23c393
+index 0000000000000000000000000000000000000000..46cfabc3227606a89c5c33d7813730f6149a5672
 --- /dev/null
 +++ b/oplus_h40_decrypt.hpp
-@@ -0,0 +1,38 @@
+@@ -0,0 +1,37 @@
 +#pragma once
 +
 +#include <string>
@@ -2881,52 +2810,14 @@ index 0000000000000000000000000000000000000000..f92e964873d7fbe9ff58f871646438a3
 +Result MountMetadataAndPrepareDe(const std::string& mount_point, User0State* user0_state);
 +Result DecryptUser(const std::string& password, int user_id);
 +Result CompleteModernHandoff(bool decrypt_succeeded);
-+bool PrepareDataUnmount();
 +
 +}  // namespace oplus_h40
 +}  // namespace twrp
-diff --git a/partition.cpp b/partition.cpp
-index 184cb165eb57692f15bf36cffd8cb8f007053569..17c359c18e9ef65bb3ad64a282ec79045dc9742d 100755
---- a/partition.cpp
-+++ b/partition.cpp
-@@ -54,6 +54,9 @@
- 	#include "cryptfs.h"
- 	#include "Decrypt.h"
- #endif
-+#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
-+	#include "oplus_h40_decrypt.hpp"
-+#endif
- extern "C" {
- 	#include "mtdutils/mtdutils.h"
- 	#include "mtdutils/mounts.h"
-@@ -1745,6 +1748,14 @@ bool TWPartition::UnMount(bool Display_Error, int flags) {
- 		if (Is_Storage && MTP_Storage_ID > 0)
- 			PartitionManager.Remove_MTP_Storage(MTP_Storage_ID);
- 
-+#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
-+		// MTP detachment is asynchronous. Once user 0 is unlocked, also stop
-+		// the OEM credential services whose working directories and GPFS files
-+		// live below /data before asking the kernel to unmount it.
-+		if (Mount_Point == "/data")
-+			twrp::oplus_h40::PrepareDataUnmount();
-+#endif
-+
- 		if (!Symlink_Mount_Point.empty())
- 			umount2(Symlink_Mount_Point.c_str(), flags);
- 
 diff --git a/partitionmanager.cpp b/partitionmanager.cpp
-index 2766b4c07ad77d364069af7afcd18d537fab238d..daa6e98ff746a41bae47dd351e61e84e7ae9a27e 100755
+index 2766b4c07ad77d364069af7afcd18d537fab238d..8be659a121515363ddeedcab10da9db9c7a4064d 100755
 --- a/partitionmanager.cpp
 +++ b/partitionmanager.cpp
-@@ -33,6 +33,7 @@
- #include <zlib.h>
- #include <iostream>
- #include <iomanip>
-+#include <sstream>
- #include <sys/wait.h>
- #include <linux/fs.h>
- #include <sys/mount.h>
-@@ -111,6 +112,43 @@ extern "C" {
+@@ -111,6 +111,43 @@ extern "C" {
  #endif
  #endif
  #endif
@@ -2970,7 +2861,7 @@ index 2766b4c07ad77d364069af7afcd18d537fab238d..daa6e98ff746a41bae47dd351e61e84e
  
  #ifdef AB_OTA_UPDATER
  #include <android/hardware/boot/1.0/IBootControl.h>
-@@ -586,6 +624,12 @@ int TWPartitionManager::Write_Fstab(void) {
+@@ -586,6 +623,12 @@ int TWPartitionManager::Write_Fstab(void) {
  void TWPartitionManager::Decrypt_Data() {
  	#ifdef TW_INCLUDE_CRYPTO
  	TWPartition* Decrypt_Data = Find_Partition_By_Path("/data");
@@ -2983,7 +2874,7 @@ index 2766b4c07ad77d364069af7afcd18d537fab238d..daa6e98ff746a41bae47dd351e61e84e
  	if (Decrypt_Data && Decrypt_Data->Is_Encrypted && !Decrypt_Data->Is_Decrypted) {
  		Set_Crypto_State();
  		TWPartition* Key_Directory_Partition = Find_Partition_By_Path(Decrypt_Data->Key_Directory);
-@@ -596,8 +640,29 @@ void TWPartitionManager::Decrypt_Data() {
+@@ -596,8 +639,29 @@ void TWPartitionManager::Decrypt_Data() {
  			Set_Crypto_Type("file");
  #ifdef TW_INCLUDE_FBE_METADATA_DECRYPT
  #ifdef USE_FSCRYPT
@@ -3013,7 +2904,7 @@ index 2766b4c07ad77d364069af7afcd18d537fab238d..daa6e98ff746a41bae47dd351e61e84e
  				Decrypt_Data->Decrypted_Block_Device = crypto_blkdev;
  				LOGINFO("Successfully decrypted metadata encrypted data partition with new block device: '%s'\n", crypto_blkdev.c_str());
  #endif
-@@ -606,14 +671,127 @@ void TWPartitionManager::Decrypt_Data() {
+@@ -606,14 +670,127 @@ void TWPartitionManager::Decrypt_Data() {
  				while (!Decrypt_Data->Mount(false) && --retry_count)
  					usleep(500);
  				if (Decrypt_Data->Mount(false)) {
@@ -3141,7 +3032,7 @@ index 2766b4c07ad77d364069af7afcd18d537fab238d..daa6e98ff746a41bae47dd351e61e84e
  				LOGINFO("Unable to decrypt metadata encryption\n");
  			}
  #else
-@@ -2105,6 +2283,12 @@ void TWPartitionManager::Check_Users_Decryption_Status() {
+@@ -2105,6 +2282,12 @@ void TWPartitionManager::Check_Users_Decryption_Status() {
  
  int TWPartitionManager::Decrypt_Device(string Password, int user_id) {
  #ifdef TW_INCLUDE_CRYPTO
@@ -3154,7 +3045,7 @@ index 2766b4c07ad77d364069af7afcd18d537fab238d..daa6e98ff746a41bae47dd351e61e84e
  	char crypto_blkdev[PROPERTY_VALUE_MAX];
  	std::vector<TWPartition*>::iterator iter;
  
-@@ -2125,12 +2309,38 @@ int TWPartitionManager::Decrypt_Device(string Password, int user_id) {
+@@ -2125,12 +2308,38 @@ int TWPartitionManager::Decrypt_Device(string Password, int user_id) {
  			return -1;
  
  		bool user_need_decrypt = false;
@@ -3182,18 +3073,18 @@ index 2766b4c07ad77d364069af7afcd18d537fab238d..daa6e98ff746a41bae47dd351e61e84e
  				user_need_decrypt = true;
  			}
 +			#endif
- 		}
++		}
 +		#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
 +		if (oplus_active && !user_found) {
 +			LOGERR("[OPLUS DECRYPT] user 0 is missing from the synthesized TWRP user map\n");
 +			g_oplus_h40_decrypt_blocked = true;
 +			return -1;
-+		}
+ 		}
 +		#endif
  		if (!user_need_decrypt) {
  			LOGINFO("User %d does not require decryption\n", user_id);
  			return 0;
-@@ -2140,10 +2350,57 @@ int TWPartitionManager::Decrypt_Device(string Password, int user_id) {
+@@ -2140,10 +2349,57 @@ int TWPartitionManager::Decrypt_Device(string Password, int user_id) {
  		while (!TWFunc::Path_Exists("/data/system/users/gatekeeper.password.key") && --retry_count)
  			usleep(2000); // A small sleep is needed after mounting /data to ensure reliable decrypt...maybe because of DE?
  		gui_msg(Msg("decrypting_user_fbe=Attempting to decrypt FBE for user {1}...")(user_id));
@@ -3251,7 +3142,7 @@ index 2766b4c07ad77d364069af7afcd18d537fab238d..daa6e98ff746a41bae47dd351e61e84e
  				// When decrypting user 0 also try all other users
  				std::vector<users_struct>::iterator iter;
  				for (iter = Users_List.begin(); iter != Users_List.end(); iter++) {
-@@ -2160,6 +2417,9 @@ int TWPartitionManager::Decrypt_Device(string Password, int user_id) {
+@@ -2160,6 +2416,9 @@ int TWPartitionManager::Decrypt_Device(string Password, int user_id) {
  						gui_msg(Msg("decrypt_user_fail_fbe=Failed to decrypt user {1}")(tmp_user_id));
  					}
  				}
@@ -3261,84 +3152,3 @@ index 2766b4c07ad77d364069af7afcd18d537fab238d..daa6e98ff746a41bae47dd351e61e84e
  				Post_Decrypt("");
  			}
  
-@@ -3771,11 +4031,80 @@ bool TWPartitionManager::Check_Pending_Merges() {
- 		return false;
- 	}
- 
-+	std::vector<std::string> dynamic_partition_bases;
-+	for (const auto* partition : Partitions) {
-+		if (partition->Is_Super) {
-+			dynamic_partition_bases.push_back(
-+				Get_Bare_Partition_Name(partition->Get_Mount_Point()));
-+		}
-+	}
-+
- 	if (!Unmap_Super_Devices()) {
- 		LOGERR("Unable to unmap dynamic partitions.\n");
- 		return false;
- 	}
- 
-+	// Android 12's HandleImminentDataWipe() maps every snapshot partition
-+	// before it examines the update state. After a manual repartition, an
-+	// unmounted first-stage mapping can therefore collide with its own retry
-+	// (DM_DEV_CREATE/EEXIST) and prevent Format Data from ever reaching mkfs.
-+	// First prove the snapshot metadata is readable, then handle only states
-+	// that are safe before the legacy mapper is entered.
-+	constexpr char kSnapshotStatePath[] = "/metadata/ota/state";
-+	if (access(kSnapshotStatePath, F_OK) != 0) {
-+		if (errno == ENOENT) {
-+			LOGINFO("[TWRP SNAPSHOT] no persisted virtual A/B update; data wipe may continue\n");
-+			return true;
-+		}
-+		LOGERR("[TWRP SNAPSHOT] cannot inspect %s: %s\n",
-+			kSnapshotStatePath, strerror(errno));
-+		return false;
-+	}
-+
-+	std::ostringstream snapshot_dump;
-+	if (!sm->Dump(snapshot_dump)) {
-+		LOGERR("[TWRP SNAPSHOT] persisted virtual A/B state is unreadable\n");
-+		return false;
-+	}
-+
-+	const android::snapshot::UpdateState update_state = sm->GetUpdateState();
-+	if (update_state == android::snapshot::UpdateState::None) {
-+		LOGINFO("[TWRP SNAPSHOT] no active virtual A/B update; data wipe may continue\n");
-+		return true;
-+	}
-+	if (update_state == android::snapshot::UpdateState::Initiated) {
-+		LOGINFO("[TWRP SNAPSHOT] cancelling pre-reboot virtual A/B update before data wipe\n");
-+		if (!sm->CancelUpdate()) {
-+			LOGERR("[TWRP SNAPSHOT] unable to cancel pre-reboot virtual A/B update\n");
-+			return false;
-+		}
-+		return true;
-+	}
-+
-+	if (update_state == android::snapshot::UpdateState::Unverified) {
-+		constexpr const char* kSlotSuffixes[] = { "_a", "_b" };
-+		for (const std::string& base : dynamic_partition_bases) {
-+			for (const char* suffix : kSlotSuffixes) {
-+				const std::string name = base + suffix;
-+				const std::string path = "/dev/block/mapper/" + name;
-+				struct stat status = {};
-+				if (lstat(path.c_str(), &status) != 0) {
-+					if (errno == ENOENT) continue;
-+					LOGERR("[TWRP SNAPSHOT] cannot inspect mapper %s: %s\n",
-+						path.c_str(), strerror(errno));
-+					return false;
-+				}
-+
-+				LOGINFO("[TWRP SNAPSHOT] removing stale recovery mapping before merge check: %s\n",
-+					name.c_str());
-+				if (!DestroyLogicalPartition(name)) {
-+					LOGERR("[TWRP SNAPSHOT] stale mapping is still busy: %s\n", name.c_str());
-+					return false;
-+				}
-+			}
-+		}
-+	}
-+
- 	auto callback = [&]() -> void {
- 		double progress;
- 		sm->GetUpdateState(&progress);
