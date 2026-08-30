@@ -417,6 +417,7 @@ jobs:
             "$work/cryptoeng-overlay.json" \
             "$work/recovery-fixes-cpio.json" \
             "$work/runtime-cpio.json" \
+            "$work/repack-manifests.json" \
             "$work/boot-repack.json" \
             "$work/verification.json" \
             "$work/avb-info.txt" \
@@ -467,6 +468,7 @@ jobs:
           copy_if_present "$work/boot.img" \
             guacamole-H40-stock-first-TWRP-ColorOS-UNVERIFIED-DO-NOT-FLASH.img
           copy_if_present "$work/private-overlay.json" private-overlay.json
+          copy_if_present "$work/repack-manifests.json" repack-manifests.json
           copy_if_present "$work/hybrid-base-verification.json" hybrid-base-verification.json
           copy_if_present "$work/verification.json" verification.json
           copy_if_present "$work/avb-info.txt" avb-info.txt

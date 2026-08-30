@@ -11,6 +11,7 @@ import struct
 from pathlib import Path
 
 import newc
+from add_repack_manifests import FILE_LIST, HASH_LIST, build_repackable_entries
 from make_private_twrp_overlay import PRIVATE_INTERPRETER, patch_exact_cstring, patch_pt_interp
 from make_stock_patch_overlay import (
     LEGACY_INSTALLER_SHELL,
@@ -130,6 +131,13 @@ def main() -> None:
     final_index = newc.index(final_entries)
     require(len(stock_entries) == len(stock_index), "stock CPIO contains duplicate paths")
     require(len(final_entries) == len(final_index), "final CPIO contains duplicate paths")
+    expected_repack_entries, _ = build_repackable_entries(final_entries)
+    require(
+        final_entries == expected_repack_entries,
+        "TWRP self-repacking manifests do not exactly describe the final ramdisk",
+    )
+    require(FILE_LIST in final_index, "TWRP self-repacking file list is absent")
+    require(HASH_LIST in final_index, "TWRP self-repacking hash list is absent")
 
     stock_patch = json.loads(args.stock_patch_report.read_text(encoding="utf-8"))
     private_manifest = json.loads(args.private_manifest.read_text(encoding="utf-8"))
@@ -380,6 +388,7 @@ def main() -> None:
             "legacy_zip_installer_shell_route_present": True,
             "stock_first_path_contract_complete": True,
             "bash_nano_zip_bundles_complete": True,
+            "flash_current_twrp_manifests_exact": True,
             "universal_owner_decryption_markers_present": True,
             "passwordless_ce_layout_dispatch_complete": True,
             "oem_verifier_isolated": True,

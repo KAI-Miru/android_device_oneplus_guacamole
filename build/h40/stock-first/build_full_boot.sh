@@ -110,8 +110,12 @@ python3 "$script_dir/apply_rc2_runtime_cpio.py" \
   --input "$work_dir/hybrid-fixed.cpio" \
   --recovery-root "$recovery_root" \
   --runtime "$work_dir/keystore2-runtime" \
-  --output "$work_dir/final-ramdisk.cpio" \
+  --output "$work_dir/final-ramdisk-unmanifested.cpio" \
   --report "$work_dir/runtime-cpio.json"
+python3 "$script_dir/add_repack_manifests.py" \
+  --input "$work_dir/final-ramdisk-unmanifested.cpio" \
+  --output "$work_dir/final-ramdisk.cpio" \
+  --report "$work_dir/repack-manifests.json"
 python3 "$script_dir/gzip_deterministic.py" \
   "$work_dir/final-ramdisk.cpio" "$work_dir/final-ramdisk.cpio.gz"
 final_ramdisk_bytes="$(wc -c < "$work_dir/final-ramdisk.cpio.gz")"

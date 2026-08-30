@@ -64,7 +64,8 @@ layout. All eight patches apply cleanly in their documented order with
   the exact private TWRP dependency closure and complete Bash/Nano/ZIP feature
   bundles, restores generated `/file_contexts`, shell configuration, `/bin`,
   and the fixed `mke2fs` configuration path, applies the tested RC2 fixes and
-  Keystore2 runtime, restores the H.40 boot-v2 framing, and verifies the final
+  Keystore2 runtime, regenerates the final ramdisk's TWRP self-repacking
+  manifests, restores the H.40 boot-v2 framing, and verifies the final
   AVB-padded `boot.img` independently.
 - `prebuilt/h40/manifest.json` pins every stock component and deliberate binary
   overlay. The 75,024-byte CommonDCS library is the tested H.40 `system_ext`
