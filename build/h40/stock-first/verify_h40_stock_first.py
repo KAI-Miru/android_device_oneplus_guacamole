@@ -332,6 +332,8 @@ def main() -> None:
         b"[OPLUS DECRYPT] partition refresh: reusing post-decrypt startup state",
         b"[OPLUS DECRYPT] partition refresh: skipping redundant data-media startup refresh",
         b"[OPLUS DECRYPT] data unmount: OEM credential services stopped",
+        b"[TWRP SNAPSHOT] no active virtual A/B update; data wipe may continue",
+        b"[TWRP SNAPSHOT] removing stale recovery mapping before merge check:",
         b"Data backup size calculated.",
         b"Data decrypted automatically.",
     ):

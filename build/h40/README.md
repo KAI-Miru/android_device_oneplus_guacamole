@@ -16,7 +16,7 @@ transform stack.
 Patch SHA-256 values:
 
 ```text
-b2a498f291ab0089f90e0bfbcadc484d4ab9143044237b39ba1c86d51e70f4e4  recovery.patch
+68c16a685a8b3b10ec00767c351973d8b68b437e37b7d894af87063c4178d176  recovery.patch
 491f78e08921259749cc1333191ba12c0a73d86bf504822f1f445056870a24f5  recovery-no-credential.patch
 91033f9fb2238c54bd88e0cb50f8d684e8ffcd3c3491ca9dba635d0688931b0f  recovery-password-probe.patch
 214fb48a0372dfef489235ab693024a1a15dac7d676398883a51dfc781d53192  recovery-setup-de-ce-guard.patch
