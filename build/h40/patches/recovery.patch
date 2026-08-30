@@ -1,5 +1,5 @@
 diff --git a/Android.mk b/Android.mk
-index e949d035522cd1df7d7e882a7758f3ff2c2516bd..d93531f483b45d6623b1dae00cef2bbf54af088d 100644
+index 383adca55ab51a331df5236366d6e4dfbd5172bc..c83b5419b565e9330956912a2b2c317b2f2d3b17 100644
 --- a/Android.mk
 +++ b/Android.mk
 @@ -335,6 +335,13 @@ endif
@@ -40,7 +40,7 @@ index e949d035522cd1df7d7e882a7758f3ff2c2516bd..d93531f483b45d6623b1dae00cef2bbf
  
 diff --git a/oplus_h40_credential_client.cpp b/oplus_h40_credential_client.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..7c0520140a74a763a944e7bdda28aa50a4b93403
+index 0000000000000000000000000000000000000000..ed40857cf8f8fb4af613e2f325012cde649bd26d
 --- /dev/null
 +++ b/oplus_h40_credential_client.cpp
 @@ -0,0 +1,611 @@
@@ -688,7 +688,7 @@ index 0000000000000000000000000000000000000000..eef7d3b98eb03962ed65b137a55e7861
 +}  // namespace twrp
 diff --git a/oplus_h40_credential_helper.cpp b/oplus_h40_credential_helper.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..74b30a57c05de7b9537dead5a736ec19e1843551
+index 0000000000000000000000000000000000000000..63ae5bad7aca486042fc99678016f7f764165d63
 --- /dev/null
 +++ b/oplus_h40_credential_helper.cpp
 @@ -0,0 +1,764 @@
@@ -1597,10 +1597,10 @@ index 0000000000000000000000000000000000000000..45dcc30b55502ed78022479d95eee8f3
 +}  // namespace twrp
 diff --git a/oplus_h40_decrypt.cpp b/oplus_h40_decrypt.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587fccc1312
+index 0000000000000000000000000000000000000000..10c425e4dda3a766d85992d3cd4a27ce8d00de00
 --- /dev/null
 +++ b/oplus_h40_decrypt.cpp
-@@ -0,0 +1,1169 @@
+@@ -0,0 +1,1240 @@
 +#include "oplus_h40_decrypt.hpp"
 +
 +#include <android/binder_auto_utils.h>
@@ -1667,10 +1667,21 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +        "vendor.gatekeeper-1-0",
 +        "keystore2",
 +};
++constexpr const char* kDataBackedServices[] = {
++        "gatekeeperd",
++        "keystore2",
++        "vendor.gatekeeper-1-0",
++        "hal_cryptoeng_oplus",
++        "keymaster-4-0",
++        "qseecomd",
++};
 +constexpr char kAuthorizationService[] = "android.security.authorization";
 +constexpr int kServiceWaitPolls = 150;
 +constexpr int kStableServicePolls = 5;
++constexpr int kUnmountServiceWaitPolls = 60;
++constexpr int kUnmountStableServicePolls = 3;
 +constexpr useconds_t kServicePollIntervalUs = 100000;
++constexpr useconds_t kUnmountSettleIntervalUs = 200000;
 +
 +using SetupDeCeFn = bool (*)(int);
 +using GetPasswordTypeFn = int (*)(int);
@@ -1699,6 +1710,7 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +    Phase phase = Phase::kIdle;
 +    bool data_mapped = false;
 +    bool user0_ce_ready = false;
++    bool data_services_quiesced = false;
 +    User0State user0;
 +};
 +
@@ -2123,6 +2135,35 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +    }
 +    LOGERR("[OPLUS DECRYPT] gatekeeperd did not stop before metadata mapping (state=%s)\n",
 +           ReadProperty("init.svc.gatekeeperd").c_str());
++    return false;
++}
++
++template <std::size_t N>
++bool WaitForQuiescentServices(const char* const (&services)[N]) {
++    int stable_polls = 0;
++    for (int poll = 0; poll < kUnmountServiceWaitPolls; ++poll) {
++        bool all_quiescent = true;
++        for (const char* service : services) {
++            const std::string state = ReadProperty(std::string("init.svc.") + service);
++            if (!state.empty() && state != "stopped" && state != "disabled") {
++                all_quiescent = false;
++                break;
++            }
++        }
++        if (all_quiescent) {
++            if (++stable_polls >= kUnmountStableServicePolls) return true;
++        } else {
++            stable_polls = 0;
++        }
++        usleep(kServicePollIntervalUs);
++    }
++
++    LOGINFO("[OPLUS DECRYPT] data unmount: credential services did not quiesce in time\n");
++    for (const char* service : services) {
++        const std::string state = ReadProperty(std::string("init.svc.") + service);
++        LOGINFO("[OPLUS DECRYPT] data unmount: init.svc.%s=%s\n",
++                service, state.c_str());
++    }
 +    return false;
 +}
 +
@@ -2768,14 +2809,44 @@ index 0000000000000000000000000000000000000000..7b2d1a037367f289bb0061c80553b587
 +    return Result::kSuccess;
 +}
 +
++bool PrepareDataUnmount() {
++    std::lock_guard<std::mutex> lock(GetRuntimeMutex());
++    RuntimeState& state = GetRuntimeState();
++
++    // TWRP also unmounts /data during early setup and failed credential paths.
++    // Quiescing the OEM stack there would break the active decrypt attempt, so
++    // this hook is deliberately inert until CE decryption has been proven.
++    if (state.phase != Phase::kUnlocked || !state.data_mapped) return true;
++    if (state.data_services_quiesced) return true;
++
++    LOGINFO("[OPLUS DECRYPT] data unmount: quiescing OEM credential services\n");
++    bool requests_succeeded = true;
++    requests_succeeded &= SetProperty("enable.qseecomd.service", "0");
++    requests_succeeded &= SetProperty("vendor.data.mounted", "0");
++    for (const char* service : kDataBackedServices) {
++        requests_succeeded &= SetProperty("ctl.stop", service);
++    }
++
++    const bool services_quiescent = WaitForQuiescentServices(kDataBackedServices);
++    sync();
++    // Remove_MTP_Storage() is delivered over TWRP's MTP message pipe. Give the
++    // server a bounded interval to release its /data descriptors as well.
++    usleep(kUnmountSettleIntervalUs);
++
++    if (!requests_succeeded || !services_quiescent) return false;
++    state.data_services_quiesced = true;
++    LOGINFO("[OPLUS DECRYPT] data unmount: OEM credential services stopped\n");
++    return true;
++}
++
 +}  // namespace oplus_h40
 +}  // namespace twrp
 diff --git a/oplus_h40_decrypt.hpp b/oplus_h40_decrypt.hpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..46cfabc3227606a89c5c33d7813730f6149a5672
+index 0000000000000000000000000000000000000000..f92e964873d7fbe9ff58f871646438a3df23c393
 --- /dev/null
 +++ b/oplus_h40_decrypt.hpp
-@@ -0,0 +1,37 @@
+@@ -0,0 +1,38 @@
 +#pragma once
 +
 +#include <string>
@@ -2810,11 +2881,41 @@ index 0000000000000000000000000000000000000000..46cfabc3227606a89c5c33d7813730f6
 +Result MountMetadataAndPrepareDe(const std::string& mount_point, User0State* user0_state);
 +Result DecryptUser(const std::string& password, int user_id);
 +Result CompleteModernHandoff(bool decrypt_succeeded);
++bool PrepareDataUnmount();
 +
 +}  // namespace oplus_h40
 +}  // namespace twrp
+diff --git a/partition.cpp b/partition.cpp
+index 184cb165eb57692f15bf36cffd8cb8f007053569..17c359c18e9ef65bb3ad64a282ec79045dc9742d 100755
+--- a/partition.cpp
++++ b/partition.cpp
+@@ -54,6 +54,9 @@
+ 	#include "cryptfs.h"
+ 	#include "Decrypt.h"
+ #endif
++#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
++	#include "oplus_h40_decrypt.hpp"
++#endif
+ extern "C" {
+ 	#include "mtdutils/mtdutils.h"
+ 	#include "mtdutils/mounts.h"
+@@ -1745,6 +1748,14 @@ bool TWPartition::UnMount(bool Display_Error, int flags) {
+ 		if (Is_Storage && MTP_Storage_ID > 0)
+ 			PartitionManager.Remove_MTP_Storage(MTP_Storage_ID);
+ 
++#ifdef TW_INCLUDE_OPLUS_H40_DECRYPT
++		// MTP detachment is asynchronous. Once user 0 is unlocked, also stop
++		// the OEM credential services whose working directories and GPFS files
++		// live below /data before asking the kernel to unmount it.
++		if (Mount_Point == "/data")
++			twrp::oplus_h40::PrepareDataUnmount();
++#endif
++
+ 		if (!Symlink_Mount_Point.empty())
+ 			umount2(Symlink_Mount_Point.c_str(), flags);
+ 
 diff --git a/partitionmanager.cpp b/partitionmanager.cpp
-index 2766b4c07ad77d364069af7afcd18d537fab238d..8be659a121515363ddeedcab10da9db9c7a4064d 100755
+index 2766b4c07ad77d364069af7afcd18d537fab238d..28f5642bfa0bf2a37706a9ebf049a6f809a72da7 100755
 --- a/partitionmanager.cpp
 +++ b/partitionmanager.cpp
 @@ -111,6 +111,43 @@ extern "C" {
