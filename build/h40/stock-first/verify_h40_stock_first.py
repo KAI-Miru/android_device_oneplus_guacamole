@@ -309,6 +309,11 @@ def main() -> None:
     require(PRIVATE_VERIFY not in relocated and PRIVATE_VERIFY in helper, "OEM verifier isolation failed")
     require(b"OEM probe contradicted the validated .pwd protector" not in relocated,
             "obsolete retained-.pwd fatal branch survived")
+    for obsolete in (
+        b"deferred recursive /data backup-size scan",
+        b"resolving deferred /data backup size",
+    ):
+        require(obsolete not in relocated, f"obsolete deferred backup-size path survived: {obsolete!r}")
     for marker in (
         b"[OPLUS DECRYPT] CE layout:",
         b"direct-aes-minimal",
@@ -323,10 +328,10 @@ def main() -> None:
         b"[OPLUS DECRYPT] no credential: selected empty-auth KeyStorage route",
         b"[OPLUS DECRYPT] no credential: deriving the default synthetic-password secret",
         b"credential services unavailable before no-credential CE install",
-        b"[OPLUS DECRYPT] partition refresh: deferred recursive /data backup-size scan",
+        b"Calculating Data backup size after decryption...",
         b"[OPLUS DECRYPT] partition refresh: reusing post-decrypt startup state",
         b"[OPLUS DECRYPT] partition refresh: skipping redundant data-media startup refresh",
-        b"[OPLUS DECRYPT] partition refresh: resolving deferred /data backup size",
+        b"Data backup size calculated.",
         b"Data decrypted automatically.",
     ):
         require(marker in relocated, f"private recovery lacks marker {marker!r}")
