@@ -9,7 +9,7 @@ import json
 import subprocess
 import sys
 from dataclasses import replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import newc
 
@@ -38,6 +38,50 @@ def metadata(entry: newc.Entry) -> tuple[int, ...]:
         entry.rdevmajor,
         entry.rdevminor,
     )
+
+
+def required_parent_directories(
+    targets: set[str], source_index: dict[str, newc.Entry]
+) -> list[str]:
+    """Return missing directory entries needed to materialize added files."""
+
+    missing: set[str] = set()
+    for target in targets:
+        parent = PurePosixPath(target).parent
+        while parent.as_posix() != ".":
+            name = parent.as_posix()
+            existing = source_index.get(name)
+            if existing is not None:
+                if existing.mode & 0o170000 != 0o040000:
+                    raise SystemExit(
+                        f"added payload has a non-directory archive parent: "
+                        f"{target} -> {name}"
+                    )
+            else:
+                if name in targets:
+                    raise SystemExit(
+                        f"added payload path is also required as a directory: {name}"
+                    )
+                missing.add(name)
+            parent = parent.parent
+    return sorted(missing, key=lambda name: (len(PurePosixPath(name).parts), name))
+
+
+def verify_parent_directory_closure(
+    entries: list[newc.Entry], index: dict[str, newc.Entry]
+) -> None:
+    for entry in entries:
+        parent = PurePosixPath(entry.name).parent.as_posix()
+        if parent == ".":
+            continue
+        parent_entry = index.get(parent)
+        if parent_entry is None:
+            raise SystemExit(f"final ramdisk entry has no archive parent: {entry.name}")
+        if parent_entry.mode & 0o170000 != 0o040000:
+            raise SystemExit(
+                f"final ramdisk entry has a non-directory archive parent: "
+                f"{entry.name} -> {parent}"
+            )
 
 
 def main() -> None:
@@ -108,6 +152,10 @@ def main() -> None:
             }
 
     next_ino = max(entry.ino for entry in source_entries) + 1
+    added_directories = required_parent_directories(set(remaining), source_index)
+    for target in added_directories:
+        output_entries.append(newc.directory(target, ino=next_ino))
+        next_ino += 1
     added = {}
     for target, data in sorted(remaining.items()):
         mode = copied_payload_modes.get(target, 0o100644)
@@ -123,6 +171,7 @@ def main() -> None:
     final_index = newc.index(final_entries)
     if len(final_entries) != len(final_index):
         raise SystemExit("fixed ramdisk contains duplicate paths")
+    verify_parent_directory_closure(final_entries, final_index)
     for before in source_entries:
         after = final_index.get(before.name)
         if after is None:
@@ -148,6 +197,7 @@ def main() -> None:
         "output_sha256": sha256(args.output.read_bytes()),
         "changed": changed,
         "added": added,
+        "added_directories": added_directories,
         "fix_report": fix_facts,
         "checks": {
             "unrelated_entries_preserved": True,
@@ -155,6 +205,7 @@ def main() -> None:
             "no_duplicate_paths": True,
             "all_reviewed_fixes_installed": True,
             "copied_payload_modes_preserved": True,
+            "complete_parent_directory_closure": True,
         },
     }
     args.report.parent.mkdir(parents=True, exist_ok=True)

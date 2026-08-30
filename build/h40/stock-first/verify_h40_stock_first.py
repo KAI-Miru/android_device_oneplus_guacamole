@@ -8,7 +8,7 @@ import gzip
 import hashlib
 import json
 import struct
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import newc
 from add_repack_manifests import FILE_LIST, HASH_LIST, build_repackable_entries
@@ -131,6 +131,16 @@ def main() -> None:
     final_index = newc.index(final_entries)
     require(len(stock_entries) == len(stock_index), "stock CPIO contains duplicate paths")
     require(len(final_entries) == len(final_index), "final CPIO contains duplicate paths")
+    for entry in final_entries:
+        parent = PurePosixPath(entry.name).parent.as_posix()
+        if parent == ".":
+            continue
+        parent_entry = final_index.get(parent)
+        require(parent_entry is not None, f"ramdisk entry has no archive parent: {entry.name}")
+        require(
+            parent_entry.mode & 0o170000 == 0o040000,
+            f"ramdisk entry has a non-directory archive parent: {entry.name} -> {parent}",
+        )
     expected_repack_entries, _ = build_repackable_entries(final_entries)
     require(
         final_entries == expected_repack_entries,
@@ -405,6 +415,7 @@ def main() -> None:
             "haptics_tzdata_qsee_plugins_exact": True,
             "unrelated_stock_entries_preserved": True,
             "no_duplicate_cpio_paths": True,
+            "ramdisk_parent_directories_complete": True,
             "gzip_roundtrip_exact": True,
             "ramdisk_within_partition_safety_limit": True,
             "avb_footer_structurally_valid": True,
