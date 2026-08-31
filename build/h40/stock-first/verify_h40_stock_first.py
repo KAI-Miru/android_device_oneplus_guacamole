@@ -335,7 +335,7 @@ def main() -> None:
         b"[TWRP SNAPSHOT] no active virtual A/B update; data wipe may continue",
         b"[TWRP SNAPSHOT] removing stale recovery mapping before merge check:",
         b"encrypt,verity,quota,project",
-        b"[TWRP FORMAT] enforcing Android ext4 userdata features: %s",
+        b"I:[TWRP FORMAT] enforcing Android ext4 userdata features: %s",
         b"Data backup size calculated.",
         b"Data decrypted automatically.",
     ):

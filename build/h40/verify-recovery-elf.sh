@@ -81,7 +81,7 @@ check_string runtime_media_ce_path '/data/media/0'
 check_string log_marker_abi 'I:[OPLUS DECRYPT] ABI loaded'
 check_string ext4_userdata_features 'encrypt,verity,quota,project'
 check_string ext4_userdata_format_marker \
-  '[TWRP FORMAT] enforcing Android ext4 userdata features: %s'
+  'I:[TWRP FORMAT] enforcing Android ext4 userdata features: %s'
 
 adapter_version=v3
 if grep -Fqx -- \

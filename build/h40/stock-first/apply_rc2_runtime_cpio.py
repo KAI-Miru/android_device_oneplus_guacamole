@@ -37,7 +37,7 @@ RECOVERY_MARKERS = (
     b"direct-aes-minimal",
     b"direct-aes-legacy-none",
     b"encrypt,verity,quota,project",
-    b"[TWRP FORMAT] enforcing Android ext4 userdata features: %s",
+    b"I:[TWRP FORMAT] enforcing Android ext4 userdata features: %s",
 )
 
 
