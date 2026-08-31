@@ -36,6 +36,8 @@ RECOVERY_MARKERS = (
     b"[OPLUS DECRYPT] CE layout:",
     b"direct-aes-minimal",
     b"direct-aes-legacy-none",
+    b"encrypt,verity,quota,project",
+    b"[TWRP FORMAT] enforcing Android ext4 userdata features: %s",
 )
 
 

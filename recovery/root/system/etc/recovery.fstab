@@ -17,8 +17,9 @@
 # Guacamole has no separate cache by-name node. OnePlus formats the real op2
 # partition as ext4 and stock/TWRP use it for /cache/recovery state.
 /dev/block/bootdevice/by-name/op2       /cache     ext4  noatime,nosuid,nodev,barrier=1,data=ordered  wait,check
+# Stock ColorOS H.40 uses encrypted ext4 userdata. Keep exactly one active
+# /data row so TWRP's runtime-fstab parser cannot select a later fallback.
 /dev/block/bootdevice/by-name/userdata  /data      ext4  noatime,nosuid,nodev,barrier=1,noauto_da_alloc,discard,inlinecrypt  wait,check,formattable,fileencryption=ice,keydirectory=/metadata/vold/metadata_encryption,quota
-/dev/block/bootdevice/by-name/userdata  /data      f2fs  noatime,nosuid,nodev,discard,inlinecrypt                           wait,check,formattable,fileencryption=ice,keydirectory=/metadata/vold/metadata_encryption,quota
 
 # update_engine requires a misc entry to discover the boot device.
 /dev/block/bootdevice/by-name/misc      /misc      emmc  defaults  defaults

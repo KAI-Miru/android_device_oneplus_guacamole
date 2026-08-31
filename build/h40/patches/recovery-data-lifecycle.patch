@@ -117,7 +117,7 @@ index 6b9275c..09c8b30 100644
  }  // namespace oplus_h40
  }  // namespace twrp
 diff --git a/partition.cpp b/partition.cpp
-index 184cb16..17c359c 100755
+index 184cb16..2112807 100755
 --- a/partition.cpp
 +++ b/partition.cpp
 @@ -54,6 +54,9 @@
@@ -145,6 +145,33 @@ index 184cb16..17c359c 100755
  		if (!Symlink_Mount_Point.empty())
  			umount2(Symlink_Mount_Point.c_str(), flags);
  
+@@ -2305,11 +2316,24 @@ bool TWPartition::Wipe_EXTFS(string File_System) {
+ 
+ 	gui_msg(Msg("formatting_using=Formatting {1} using {2}...")(Display_Name)("mke2fs"));
+ 
+-	// Execute mke2fs to create empty ext4 filesystem
++	// Execute mke2fs to create an empty ext filesystem. Android userdata
++	// requires these on-disk features before vold can install fscrypt keys or
++	// enable fs-verity on app files. Do not rely on the host mke2fs.conf: the
++	// stock H.40 and OOS12 recovery configurations omit both features.
+ 	Command = "mke2fs -t " + File_System + " -b 4096 -I 512";
++	string Features;
++	if (Mount_Point == "/data" && File_System == "ext4") {
++		Features = "encrypt,verity,quota,project";
++		LOGINFO("[TWRP FORMAT] enforcing Android ext4 userdata features: %s\n",
++			Features.c_str());
++	}
+ 	if (Needs_Metadata_Csum) {
+-		Command += " -O metadata_csum,64bit,extent";
++		if (!Features.empty())
++			Features += ",";
++		Features += "metadata_csum,64bit,extent";
+ 	}
++	if (!Features.empty())
++		Command += " -O " + Features;
+ 	Command += " " + Actual_Block_Device + " " + size_str;
+ 	LOGINFO("mke2fs command: %s\n", Command.c_str());
+ 	ret = TWFunc::Exec_Cmd(Command);
 diff --git a/partitionmanager.cpp b/partitionmanager.cpp
 index 0bda14b..48d2505 100755
 --- a/partitionmanager.cpp

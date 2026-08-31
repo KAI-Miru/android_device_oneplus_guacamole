@@ -334,6 +334,8 @@ def main() -> None:
         b"[OPLUS DECRYPT] data unmount: OEM credential services stopped",
         b"[TWRP SNAPSHOT] no active virtual A/B update; data wipe may continue",
         b"[TWRP SNAPSHOT] removing stale recovery mapping before merge check:",
+        b"encrypt,verity,quota,project",
+        b"[TWRP FORMAT] enforcing Android ext4 userdata features: %s",
         b"Data backup size calculated.",
         b"Data decrypted automatically.",
     ):
@@ -347,6 +349,31 @@ def main() -> None:
         require(forbidden not in fstab and forbidden not in flags, f"phantom mount survived: {forbidden!r}")
     require(fstab.count(b"/dev/block/bootdevice/by-name/system") == 1, "System fstab row is duplicated")
     require(b"/dev/block/bootdevice/by-name/op2       /cache" in fstab, "op2 cache mapping is absent")
+    active_rows = [
+        line.split()
+        for line in fstab.decode("utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#") and len(line.split()) >= 5
+    ]
+    data_rows = [row for row in active_rows if row[1] == "/data"]
+    require(len(data_rows) == 1, "final recovery fstab must contain exactly one active /data row")
+    data_row = data_rows[0]
+    require(
+        data_row[:3]
+        == ["/dev/block/bootdevice/by-name/userdata", "/data", "ext4"],
+        "final recovery fstab does not use physical ext4 userdata",
+    )
+    require("inlinecrypt" in data_row[3].split(","), "final /data row lacks inlinecrypt")
+    require(
+        {
+            "wait",
+            "check",
+            "formattable",
+            "fileencryption=ice",
+            "keydirectory=/metadata/vold/metadata_encryption",
+            "quota",
+        }.issubset(data_row[-1].split(",")),
+        "final /data row lacks the encrypted ext4 fs_mgr contract",
+    )
 
     init_rc = final_index["system/etc/init/init.rc"].data
     qcom_rc = final_index["init.recovery.qcom.rc"].data

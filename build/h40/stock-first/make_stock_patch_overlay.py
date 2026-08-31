@@ -213,6 +213,32 @@ def physical_static_ab_fstab(text: str, relative: str) -> str:
         if any(not row[3].startswith("ro") for row in rows):
             raise SystemExit(f"rewritten {partition} row is not read-only in {relative}")
 
+    data_rows = []
+    for line in result.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        fields = stripped.split()
+        if len(fields) >= 5 and fields[1] == "/data":
+            data_rows.append(fields)
+    if len(data_rows) != 1:
+        raise SystemExit(f"{relative} must contain exactly one active /data row")
+    data_row = data_rows[0]
+    if data_row[:3] != ["/dev/block/bootdevice/by-name/userdata", "/data", "ext4"]:
+        raise SystemExit(f"{relative} does not use physical ext4 userdata")
+    if "inlinecrypt" not in data_row[3].split(","):
+        raise SystemExit(f"{relative} /data row lacks inlinecrypt")
+    required_data_flags = {
+        "wait",
+        "check",
+        "formattable",
+        "fileencryption=ice",
+        "keydirectory=/metadata/vold/metadata_encryption",
+        "quota",
+    }
+    if not required_data_flags.issubset(data_row[-1].split(",")):
+        raise SystemExit(f"{relative} /data row lacks the encrypted ext4 fs_mgr contract")
+
     for line in result.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):

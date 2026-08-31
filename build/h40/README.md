@@ -21,7 +21,7 @@ ccd7231d66b3599203c8fde236ec4f9ca90bab3118239d67f5547f3c0032dbe5  recovery.patch
 91033f9fb2238c54bd88e0cb50f8d684e8ffcd3c3491ca9dba635d0688931b0f  recovery-password-probe.patch
 214fb48a0372dfef489235ab693024a1a15dac7d676398883a51dfc781d53192  recovery-setup-de-ce-guard.patch
 f064ae92c4dfbea09b6864072f0668034f38220c0d47874621c45a923f5b8bbc  recovery-fast-startup.patch
-a5f5800107fe21b425b0efe3eb8fbfb775d9ea038cc4df5851bb9fbe03a16fce  recovery-data-lifecycle.patch
+7e1fd8e0caa646d7795e0149710daba703f30f4322e6c047ef02fd5107dad080  recovery-data-lifecycle.patch
 0e77fb79b487c3e3c37c39d433a2ed51b2c2748da2e92778bd81a15cb180cd9e  vold.patch
 9d86b2154b43b04f74d9b52bd4d5ce214c8505153ee8061854f6d3199e324797  vold-no-credential.patch
 0cd8269b20fa83fcfff42eee02a6a0be8a0d8a74bb2ee9baba8449dc26441523  security.patch
@@ -45,7 +45,8 @@ layout. All ten patches apply cleanly in their documented order with
   no-credential handoffs, and universal installed-system identity discovery
   for static and dynamic partition layouts. The supplement avoids the stock
   `fscrypt_init_user0_ce()` crash, bypasses the stock password-type ABI when no
-  `.pwd` protector exists, and requires a parent-process CE proof.
+  `.pwd` protector exists, requires a parent-process CE proof, and makes Format
+  Data create ext4 with `encrypt`, `verity`, `quota`, and `project` features.
 - `vold.patch` plus `vold-no-credential.patch` are shared byte-for-byte with
   Hotdog. They implement HIDL
   Keymaster compatibility, constructor-safe state, fail-closed `pKMblob`
@@ -79,6 +80,10 @@ layout. All ten patches apply cleanly in their documented order with
 - Decryption support is owner-only: Android user 0 is supported and physically
   validated. Secondary users, work profiles, System Cloner data, and other
   non-owner credential domains are intentionally unsupported.
+- The final recovery fstab contains exactly one active `/data` row: encrypted
+  ext4 with `inlinecrypt`, `fileencryption=ice`, the metadata key directory, and
+  quota. Both the source and final-image gates reject an F2FS fallback or a
+  formatter that lacks the Android ext4 encryption/verity feature contract.
 - The current-only CE installer accepts exactly two read-only schemas:
   `encrypted_key` plus `version`, or those files plus a literal `none`
   stretching marker and a nonzero 16 KiB `secdiscardable`. Unknown, mixed,

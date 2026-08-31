@@ -44,7 +44,7 @@
   },
   "configuration": {
     "recovery/root/etc/cgroups.json": {"bytes": 905, "sha256": "933c1723dac793a201e17e17c068f4d264dcd300e69cc42e4a856571ff5b1ad5"},
-    "recovery/root/system/etc/recovery.fstab": {"bytes": 2118, "sha256": "d7dc2e57a84a618122103800b1e0a2b294bbc8730c8a9bfff57bad28df9847af"},
+    "recovery/root/system/etc/recovery.fstab": {"bytes": 2048, "sha256": "3bc348c9fe1a2000892ca9370617b32c9ee359ef27d9007364760715ed848fb0"},
     "recovery/root/system/etc/twrp.flags": {"bytes": 2083, "sha256": "3ce031e52921486568ddd7e94851458b3f2e47574062be97aeca10f560d33565"},
     "recovery/root/twres/splash.xml": {"bytes": 2852, "sha256": "18cb80da970cde075bc088546c8c1b676035b2a684db65cb3137c5ad38e4d6d4"},
     "recovery/root/twres/images/mirumiru.png": {"bytes": 368504, "sha256": "e97f44433a8bec451c66f0c318d96e200bef17d4e5d3d10d7e3e7a78da135667"}

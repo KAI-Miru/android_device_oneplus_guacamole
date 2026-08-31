@@ -115,6 +115,36 @@ def validate_fstab(text: str, name: str) -> None:
         require(rows[0][3].startswith("ro"), f"{name} ext4 {partition} alternative is not read-only")
         require(rows[1][3].startswith("ro"), f"{name} erofs {partition} alternative is not read-only")
 
+    active_rows = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        fields = stripped.split()
+        if len(fields) >= 5:
+            active_rows.append(fields)
+    data_rows = [row for row in active_rows if row[1] == "/data"]
+    require(len(data_rows) == 1, f"{name} must contain exactly one active /data row")
+    data_row = data_rows[0]
+    require(
+        data_row[:3]
+        == ["/dev/block/bootdevice/by-name/userdata", "/data", "ext4"],
+        f"{name} does not use physical ext4 userdata",
+    )
+    require("inlinecrypt" in data_row[3].split(","), f"{name} /data lacks inlinecrypt")
+    required_data_flags = {
+        "wait",
+        "check",
+        "formattable",
+        "fileencryption=ice",
+        "keydirectory=/metadata/vold/metadata_encryption",
+        "quota",
+    }
+    require(
+        required_data_flags.issubset(data_row[-1].split(",")),
+        f"{name} /data lacks the encrypted ext4 fs_mgr contract",
+    )
+
     for line in text.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
